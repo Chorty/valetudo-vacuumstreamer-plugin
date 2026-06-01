@@ -1,7 +1,28 @@
-const express = require("express");
-
 const CapabilityRouter = require("../../../backend/lib/webserver/capabilityRouters/CapabilityRouter");
 const Logger = require("../../../backend/lib/Logger");
+
+const MAX_IMPORT_BYTES = 100 * 1024 * 1024; // 100 MB
+
+function readRawBody(req, res, next) {
+    if (req.headers["content-type"] !== "application/octet-stream") {
+        return next();
+    }
+    const chunks = [];
+    let size = 0;
+    req.on("data", chunk => {
+        size += chunk.length;
+        if (size > MAX_IMPORT_BYTES) {
+            req.destroy(new Error("Request body too large"));
+            return;
+        }
+        chunks.push(chunk);
+    });
+    req.on("end", () => {
+        req.body = Buffer.concat(chunks);
+        next();
+    });
+    req.on("error", next);
+}
 
 class MapManagementCapabilityRouter extends CapabilityRouter {
     initRoutes() {
@@ -96,9 +117,9 @@ class MapManagementCapabilityRouter extends CapabilityRouter {
         });
 
         // POST /import — Upload a map archive
-        // Uses raw body parser for binary data since the global middleware is JSON
+        // readRawBody parses application/octet-stream since the global middleware is JSON-only
         this.router.post("/import",
-            express.raw({type: "application/octet-stream", limit: "100mb"}),
+            readRawBody,
             async (req, res) => {
                 const name = req.query.name || `Imported Map ${new Date().toISOString().split("T")[0]}`;
 
