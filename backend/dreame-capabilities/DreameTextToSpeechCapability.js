@@ -200,7 +200,7 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
                 } else if (response.statusCode === 200) {
                     response.pipe(file);
                     file.on("finish", () => {
-                        file.close(resolve);
+                        file.close(() => resolve());
                     });
                 } else {
                     response.resume();
