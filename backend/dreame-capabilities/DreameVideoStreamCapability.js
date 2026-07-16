@@ -1,5 +1,6 @@
 const fs = require("fs");
 const Logger = require("../../../backend/lib/Logger");
+const os = require("os");
 const VideoStreamCapability = require("../core-capabilities/VideoStreamCapability");
 const {execSync, spawn} = require("child_process");
 
@@ -221,6 +222,19 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
      * @returns {string}
      */
     _getHostAddress() {
+        const addresses = Object.values(os.networkInterfaces())
+            .flat()
+            .filter(address => address && (address.family === "IPv4" || address.family === 4) && !address.internal);
+        const privateAddress = addresses.find(address => {
+            return /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(address.address);
+        });
+        if (privateAddress) {
+            return privateAddress.address;
+        }
+        if (addresses.length > 0) {
+            return addresses[0].address;
+        }
+
         try {
             const result = execSync("hostname -I 2>/dev/null || hostname -i 2>/dev/null", {encoding: "utf-8"}).trim();
             const ip = result.split(" ")[0];
