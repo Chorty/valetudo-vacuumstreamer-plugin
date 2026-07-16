@@ -1,8 +1,17 @@
 const fs = require("fs");
 const Logger = require("../../../backend/lib/Logger");
 const MapManagementCapability = require("../core-capabilities/MapManagementCapability");
+const os = require("os");
 const path = require("path");
-const {exec, execSync} = require("child_process");
+const tar = require("tar-stream");
+const {createGunzip} = require("zlib");
+const {exec, execFileSync} = require("child_process");
+const {Readable} = require("stream");
+
+const MAX_ARCHIVE_BYTES = 100 * 1024 * 1024;
+const MAX_ARCHIVE_ENTRIES = 10000;
+const MAX_EXTRACTED_BYTES = 512 * 1024 * 1024;
+const MAP_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 /**
  * Dreame-specific map management capability.
@@ -69,18 +78,20 @@ class DreameMapManagementCapability extends MapManagementCapability {
             const entries = await fs.promises.readdir(storagePath, {withFileTypes: true});
 
             await Promise.all(entries.filter(e => e.isDirectory()).map(async (entry) => {
-                const metadataPath = path.join(storagePath, entry.name, "metadata.json");
+                const mapDirectory = path.join(storagePath, entry.name);
                 let name = entry.name;
                 let timestamp = 0;
 
                 try {
-                    const meta = JSON.parse(await fs.promises.readFile(metadataPath, "utf8"));
-                    name = meta.name || entry.name;
-                    timestamp = meta.timestamp || 0;
+                    const meta = this._readMapMetadata(mapDirectory);
+                    if (meta !== null) {
+                        name = meta.name || entry.name;
+                        timestamp = meta.timestamp || 0;
+                    }
                 } catch (_) {
                     // metadata missing or unreadable — fall back to directory mtime
                     try {
-                        const stat = await fs.promises.stat(path.join(storagePath, entry.name));
+                        const stat = await fs.promises.stat(mapDirectory);
                         timestamp = Math.floor(stat.mtimeMs);
                     } catch (_) {
                         // ignore
@@ -115,7 +126,11 @@ class DreameMapManagementCapability extends MapManagementCapability {
      */
     async saveMap(name) {
         const id = this._generateId(name);
-        const targetDir = path.join(this.mapConfig.storagePath, id);
+        const targetDir = this._resolveMapDirectory(id, false);
+
+        if (fs.existsSync(targetDir)) {
+            throw new Error(`Map with id "${id}" already exists`);
+        }
 
         Logger.info(`Saving current map as "${name}" (id: ${id})`);
 
@@ -128,8 +143,7 @@ class DreameMapManagementCapability extends MapManagementCapability {
                 if (fs.existsSync(dir)) {
                     const dirName = path.basename(dir);
                     const destDir = path.join(targetDir, dirName);
-                    // Use cp -a to preserve attributes
-                    execSync(`cp -a "${dir}" "${destDir}"`);
+                    fs.cpSync(dir, destDir, {recursive: true, preserveTimestamps: true});
                     Logger.info(`  Copied ${dir} → ${destDir}`);
                 } else {
                     Logger.warn(`  Map directory ${dir} does not exist, skipping`);
@@ -138,7 +152,7 @@ class DreameMapManagementCapability extends MapManagementCapability {
 
             // Copy mult_map.json if it exists
             if (fs.existsSync(this.mapConfig.multMapConfig)) {
-                execSync(`cp -a "${this.mapConfig.multMapConfig}" "${path.join(targetDir, "mult_map.json")}"`);
+                fs.copyFileSync(this.mapConfig.multMapConfig, path.join(targetDir, "mult_map.json"));
                 Logger.info("  Copied mult_map.json");
             }
 
@@ -155,7 +169,7 @@ class DreameMapManagementCapability extends MapManagementCapability {
         } catch (e) {
             // Clean up on failure
             try {
-                execSync(`rm -rf "${targetDir}"`);
+                fs.rmSync(targetDir, {recursive: true, force: true});
             } catch (_) {
                 // ignore cleanup errors
             }
@@ -169,17 +183,14 @@ class DreameMapManagementCapability extends MapManagementCapability {
      * @returns {Promise<void>}
      */
     async loadMap(id) {
-        const sourceDir = path.join(this.mapConfig.storagePath, id);
-
-        if (!fs.existsSync(sourceDir)) {
-            throw new Error(`Map with id "${id}" not found`);
-        }
+        const sourceDir = this._resolveMapDirectory(id, true);
+        this._assertSafeMapTree(sourceDir);
 
         // Read metadata for logging
         let mapName = id;
         try {
-            const meta = JSON.parse(fs.readFileSync(path.join(sourceDir, "metadata.json"), "utf8"));
-            mapName = meta.name || id;
+            const meta = this._readMapMetadata(sourceDir);
+            mapName = meta?.name || id;
         } catch (_) {
             // ignore — metadata missing or unreadable
         }
@@ -192,14 +203,14 @@ class DreameMapManagementCapability extends MapManagementCapability {
         for (const dir of this.mapConfig.mapDirs) {
             if (fs.existsSync(dir)) {
                 const bak = `${dir}.loadbak`;
-                execSync(`mv "${dir}" "${bak}"`);
-                stagedDirs.push({active: dir, bak});
+                fs.renameSync(dir, bak);
+                stagedDirs.push({active: dir, bak: bak});
             }
         }
         const multMapBak = `${this.mapConfig.multMapConfig}.loadbak`;
         let multMapStaged = false;
         if (fs.existsSync(this.mapConfig.multMapConfig)) {
-            execSync(`mv "${this.mapConfig.multMapConfig}" "${multMapBak}"`);
+            fs.renameSync(this.mapConfig.multMapConfig, multMapBak);
             multMapStaged = true;
         }
 
@@ -210,7 +221,7 @@ class DreameMapManagementCapability extends MapManagementCapability {
                 const dirName = path.basename(dir);
                 const savedDir = path.join(sourceDir, dirName);
                 if (fs.existsSync(savedDir)) {
-                    execSync(`cp -a "${savedDir}" "${dir}"`);
+                    fs.cpSync(savedDir, dir, {recursive: true, preserveTimestamps: true});
                     Logger.info(`    Restored ${savedDir} → ${dir}`);
                 } else {
                     Logger.warn(`    Saved map does not contain ${dirName}, skipping`);
@@ -221,7 +232,7 @@ class DreameMapManagementCapability extends MapManagementCapability {
             const savedMultMap = path.join(sourceDir, "mult_map.json");
             if (fs.existsSync(savedMultMap)) {
                 fs.mkdirSync(path.dirname(this.mapConfig.multMapConfig), {recursive: true});
-                execSync(`cp -a "${savedMultMap}" "${this.mapConfig.multMapConfig}"`);
+                fs.copyFileSync(savedMultMap, this.mapConfig.multMapConfig);
                 Logger.info("    Restored mult_map.json");
             }
 
@@ -234,18 +245,28 @@ class DreameMapManagementCapability extends MapManagementCapability {
 
             // Step 4: Remove staged backups now that restore fully succeeded
             for (const {bak} of stagedDirs) {
-                try { execSync(`rm -rf "${bak}"`); } catch (_) {}
+                try {
+                    fs.rmSync(bak, {recursive: true, force: true});
+                } catch (_) {
+                    // ignore cleanup errors after a successful restore
+                }
             }
             if (multMapStaged) {
-                try { execSync(`rm -f "${multMapBak}"`); } catch (_) {}
+                try {
+                    fs.rmSync(multMapBak, {force: true});
+                } catch (_) {
+                    // ignore cleanup errors after a successful restore
+                }
             }
         } catch (e) {
             // Restore failed — roll back staged backups to preserve original data
             Logger.error(`Failed to load map "${mapName}", rolling back:`, e.message);
             for (const {active, bak} of stagedDirs) {
                 try {
-                    if (fs.existsSync(active)) { execSync(`rm -rf "${active}"`); }
-                    execSync(`mv "${bak}" "${active}"`);
+                    if (fs.existsSync(active)) {
+                        fs.rmSync(active, {recursive: true, force: true});
+                    }
+                    fs.renameSync(bak, active);
                 } catch (rollbackErr) {
                     Logger.error(`  Rollback failed for ${active}:`, rollbackErr.message);
                 }
@@ -253,9 +274,9 @@ class DreameMapManagementCapability extends MapManagementCapability {
             if (multMapStaged && fs.existsSync(multMapBak)) {
                 try {
                     if (fs.existsSync(this.mapConfig.multMapConfig)) {
-                        execSync(`rm -f "${this.mapConfig.multMapConfig}"`);
+                        fs.rmSync(this.mapConfig.multMapConfig, {force: true});
                     }
-                    execSync(`mv "${multMapBak}" "${this.mapConfig.multMapConfig}"`);
+                    fs.renameSync(multMapBak, this.mapConfig.multMapConfig);
                 } catch (rollbackErr) {
                     Logger.error("  Rollback failed for mult_map.json:", rollbackErr.message);
                 }
@@ -269,16 +290,12 @@ class DreameMapManagementCapability extends MapManagementCapability {
      * @returns {Promise<void>}
      */
     async deleteMap(id) {
-        const targetDir = path.join(this.mapConfig.storagePath, id);
-
-        if (!fs.existsSync(targetDir)) {
-            throw new Error(`Map with id "${id}" not found`);
-        }
+        const targetDir = this._resolveMapDirectory(id, true);
 
         Logger.info(`Deleting map backup: ${id}`);
 
         try {
-            execSync(`rm -rf "${targetDir}"`);
+            fs.rmSync(targetDir, {recursive: true});
             Logger.info(`Map backup "${id}" deleted`);
 
             // If the deleted slot was the active floor, clear the active marker
@@ -297,19 +314,16 @@ class DreameMapManagementCapability extends MapManagementCapability {
      * @returns {Promise<void>}
      */
     async renameMap(id, newName) {
-        const targetDir = path.join(this.mapConfig.storagePath, id);
+        const targetDir = this._resolveMapDirectory(id, true);
+        this._assertSafeMapTree(targetDir);
         const metadataPath = path.join(targetDir, "metadata.json");
-
-        if (!fs.existsSync(targetDir)) {
-            throw new Error(`Map with id "${id}" not found`);
-        }
 
         Logger.info(`Renaming map "${id}" to "${newName}"`);
 
         try {
             let metadata = {};
             if (fs.existsSync(metadataPath)) {
-                metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+                metadata = this._readMapMetadata(targetDir);
             }
             metadata.name = newName;
             fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
@@ -325,22 +339,18 @@ class DreameMapManagementCapability extends MapManagementCapability {
      * @returns {Promise<{filePath: string, fileName: string}>}
      */
     async exportMap(id) {
-        const sourceDir = path.join(this.mapConfig.storagePath, id);
-
-        if (!fs.existsSync(sourceDir)) {
-            throw new Error(`Map with id "${id}" not found`);
-        }
+        const sourceDir = this._resolveMapDirectory(id, true);
+        this._assertSafeMapTree(sourceDir);
 
         // Read metadata for filename
         let mapName = id;
-        const metadataPath = path.join(sourceDir, "metadata.json");
-        if (fs.existsSync(metadataPath)) {
-            try {
-                const meta = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+        try {
+            const meta = this._readMapMetadata(sourceDir);
+            if (meta !== null) {
                 mapName = meta.name || id;
-            } catch (_) {
-                // ignore
             }
+        } catch (_) {
+            // ignore invalid metadata contents; unsafe filesystem entries were rejected above
         }
 
         const safeName = mapName.replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -350,7 +360,9 @@ class DreameMapManagementCapability extends MapManagementCapability {
         Logger.info(`Exporting map "${mapName}" to ${archivePath}`);
 
         try {
-            execSync(`tar -czf "${archivePath}" -C "${this.mapConfig.storagePath}" "${id}"`);
+            execFileSync("tar", ["-czf", archivePath, "-C", this.mapConfig.storagePath, id], {
+                env: {...process.env, COPYFILE_DISABLE: "1"},
+            });
             Logger.info(`Map exported: ${archivePath}`);
             return {filePath: archivePath, fileName: archiveName};
         } catch (e) {
@@ -366,42 +378,36 @@ class DreameMapManagementCapability extends MapManagementCapability {
      */
     async importMap(data, name) {
         const id = this._generateId(name);
-        const tempArchive = `/tmp/valetudo_map_import_${Date.now()}.tar.gz`;
-        const tempExtractDir = `/tmp/valetudo_map_extract_${Date.now()}`;
+        const tempExtractDir = fs.mkdtempSync(path.join(os.tmpdir(), "valetudo_map_extract_"));
+        const storagePath = fs.realpathSync(this.mapConfig.storagePath);
+        const stagingParent = fs.mkdtempSync(path.join(storagePath, ".import-"));
+        const stagingDir = path.join(stagingParent, "map");
+        const targetDir = this._resolveMapDirectory(id, false);
 
         Logger.info(`Importing map as "${name}" (id: ${id})`);
 
         try {
-            // Write uploaded data to temp file
-            fs.writeFileSync(tempArchive, data);
-
-            // Extract to temp directory first to validate
-            fs.mkdirSync(tempExtractDir, {recursive: true});
-            execSync(`tar -xzf "${tempArchive}" -C "${tempExtractDir}"`);
-
-            // Find the extracted directory (should be a single directory inside)
-            const extracted = fs.readdirSync(tempExtractDir, {withFileTypes: true})
-                .filter(e => e.isDirectory());
-
-            if (extracted.length === 0) {
-                throw new Error("Archive does not contain a valid map directory");
-            }
-
-            const extractedDir = path.join(tempExtractDir, extracted[0].name);
+            const extractedRoot = await this._extractMapArchive(data, tempExtractDir);
+            const extractedDir = path.join(tempExtractDir, extractedRoot);
 
             // Validate that it looks like a map backup (should contain at least one of ri, map, DivideMap)
             const hasMapData = ["ri", "map", "DivideMap"].some(
-                d => fs.existsSync(path.join(extractedDir, d))
+                d => {
+                    const mapDataPath = path.join(extractedDir, d);
+                    try {
+                        return fs.lstatSync(mapDataPath).isDirectory();
+                    } catch (_) {
+                        return false;
+                    }
+                }
             );
 
             if (!hasMapData) {
                 throw new Error("Archive does not contain valid map data (expected ri, map, or DivideMap directories)");
             }
 
-            // Move to permanent storage
-            const targetDir = path.join(this.mapConfig.storagePath, id);
-            execSync(`rm -rf "${targetDir}"`);
-            execSync(`mv "${extractedDir}" "${targetDir}"`);
+            // Copy into a staging directory on the storage filesystem, then promote atomically
+            fs.cpSync(extractedDir, stagingDir, {recursive: true, preserveTimestamps: true});
 
             // Update metadata
             const metadata = {
@@ -410,22 +416,30 @@ class DreameMapManagementCapability extends MapManagementCapability {
                 id: id,
                 imported: true,
             };
-            fs.writeFileSync(path.join(targetDir, "metadata.json"), JSON.stringify(metadata, null, 2));
+            fs.writeFileSync(path.join(stagingDir, "metadata.json"), JSON.stringify(metadata, null, 2));
+
+            if (fs.existsSync(targetDir)) {
+                this._resolveMapDirectory(id, true);
+                fs.rmSync(targetDir, {recursive: true});
+            }
+            fs.renameSync(stagingDir, targetDir);
 
             Logger.info(`Map "${name}" imported successfully`);
 
             // Cleanup
             try {
-                execSync(`rm -rf "${tempArchive}" "${tempExtractDir}"`);
+                fs.rmSync(tempExtractDir, {recursive: true, force: true});
+                fs.rmSync(stagingParent, {recursive: true, force: true});
             } catch (_) {
                 // ignore cleanup errors
             }
 
             return {id: id, name: name};
         } catch (e) {
-            // Cleanup on failure — remove both the archive and the extract dir
+            // Cleanup on failure
             try {
-                execSync(`rm -rf "${tempArchive}" "${tempExtractDir}"`);
+                fs.rmSync(tempExtractDir, {recursive: true, force: true});
+                fs.rmSync(stagingParent, {recursive: true, force: true});
             } catch (_) {
                 // ignore
             }
@@ -508,6 +522,267 @@ class DreameMapManagementCapability extends MapManagementCapability {
     }
 
     /**
+     * Resolve a map ID to a real direct child of the configured storage directory.
+     *
+     * @private
+     * @param {string} id
+     * @param {boolean} mustExist
+     * @returns {string}
+     */
+    _resolveMapDirectory(id, mustExist) {
+        if (typeof id !== "string" || !MAP_ID_PATTERN.test(id)) {
+            throw new Error(`Invalid map id "${id}"`);
+        }
+
+        const storagePath = fs.realpathSync(this.mapConfig.storagePath);
+        const candidate = path.resolve(storagePath, id);
+        if (path.dirname(candidate) !== storagePath) {
+            throw new Error(`Invalid map id "${id}"`);
+        }
+
+        if (!fs.existsSync(candidate)) {
+            if (mustExist) {
+                throw new Error(`Map with id "${id}" not found`);
+            }
+            return candidate;
+        }
+
+        const stat = fs.lstatSync(candidate);
+        if (stat.isSymbolicLink()) {
+            throw new Error(`Map with id "${id}" is a symbolic link`);
+        }
+        if (!stat.isDirectory()) {
+            throw new Error(`Map with id "${id}" is not a directory`);
+        }
+
+        const realCandidate = fs.realpathSync(candidate);
+        if (path.dirname(realCandidate) !== storagePath) {
+            throw new Error(`Map with id "${id}" resolves outside map storage`);
+        }
+
+        return candidate;
+    }
+
+    /**
+     * Reject unsafe entries that may remain in maps imported by older vulnerable versions.
+     *
+     * @private
+     * @param {string} mapDirectory
+     */
+    _assertSafeMapTree(mapDirectory) {
+        const root = fs.realpathSync(mapDirectory);
+        let entryCount = 0;
+        let totalBytes = 0;
+
+        const visit = currentDirectory => {
+            for (const entry of fs.readdirSync(currentDirectory, {withFileTypes: true})) {
+                entryCount += 1;
+                if (entryCount > MAX_ARCHIVE_ENTRIES) {
+                    throw new Error(`Unsafe saved map: more than ${MAX_ARCHIVE_ENTRIES} entries`);
+                }
+
+                const candidate = path.join(currentDirectory, entry.name);
+                const stat = fs.lstatSync(candidate);
+                if (stat.isSymbolicLink()) {
+                    throw new Error(`Unsafe saved map: symbolic link at "${path.relative(root, candidate)}"`);
+                }
+
+                const realCandidate = fs.realpathSync(candidate);
+                if (realCandidate !== root && !realCandidate.startsWith(`${root}${path.sep}`)) {
+                    throw new Error("Unsafe saved map: entry resolves outside map directory");
+                }
+
+                if (stat.isDirectory()) {
+                    visit(candidate);
+                } else if (stat.isFile()) {
+                    totalBytes += stat.size;
+                    if (totalBytes > MAX_EXTRACTED_BYTES) {
+                        throw new Error(`Unsafe saved map: exceeds ${MAX_EXTRACTED_BYTES} bytes`);
+                    }
+                } else {
+                    throw new Error(`Unsafe saved map: unsupported entry at "${path.relative(root, candidate)}"`);
+                }
+            }
+        };
+
+        visit(root);
+    }
+
+    /**
+     * @private
+     * @param {string} mapDirectory
+     * @returns {object|null}
+     */
+    _readMapMetadata(mapDirectory) {
+        const metadataPath = path.join(mapDirectory, "metadata.json");
+        if (!fs.existsSync(metadataPath)) {
+            return null;
+        }
+
+        const stat = fs.lstatSync(metadataPath);
+        if (stat.isSymbolicLink()) {
+            throw new Error("Unsafe saved map metadata: symbolic link");
+        }
+        if (!stat.isFile()) {
+            throw new Error("Unsafe saved map metadata: not a regular file");
+        }
+
+        const root = fs.realpathSync(mapDirectory);
+        const realMetadataPath = fs.realpathSync(metadataPath);
+        if (path.dirname(realMetadataPath) !== root) {
+            throw new Error("Unsafe saved map metadata: resolves outside map directory");
+        }
+
+        return JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+    }
+
+    /**
+     * Extract a gzip-compressed tar archive while enforcing a strict filesystem boundary.
+     *
+     * @private
+     * @param {Buffer} data
+     * @param {string} destinationRoot
+     * @returns {Promise<string>} the single extracted top-level directory name
+     */
+    async _extractMapArchive(data, destinationRoot) {
+        if (!Buffer.isBuffer(data) || data.length === 0 || data.length > MAX_ARCHIVE_BYTES) {
+            throw new Error(`Archive must be a non-empty gzip file no larger than ${MAX_ARCHIVE_BYTES} bytes`);
+        }
+
+        const root = path.resolve(destinationRoot);
+        const extract = tar.extract();
+        const gunzip = createGunzip();
+        const input = Readable.from([data]);
+        let entryCount = 0;
+        let extractedBytes = 0;
+        let topLevel = null;
+
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            const fail = error => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                input.destroy();
+                gunzip.destroy();
+                extract.destroy();
+                reject(error);
+            };
+
+            extract.on("entry", (header, stream, next) => {
+                try {
+                    entryCount += 1;
+                    if (entryCount > MAX_ARCHIVE_ENTRIES) {
+                        throw new Error(`Archive contains more than ${MAX_ARCHIVE_ENTRIES} entries`);
+                    }
+                    if (header.type !== "file" && header.type !== "directory") {
+                        throw new Error(`Unsupported archive entry type "${header.type}"`);
+                    }
+
+                    const entryName = this._normalizeArchiveEntryName(header.name);
+                    const entryTopLevel = entryName.split("/")[0];
+                    if (topLevel === null) {
+                        topLevel = entryTopLevel;
+                    } else if (entryTopLevel !== topLevel) {
+                        throw new Error("Archive must contain exactly one top-level directory");
+                    }
+
+                    const destination = path.resolve(root, ...entryName.split("/"));
+                    if (destination === root || !destination.startsWith(`${root}${path.sep}`)) {
+                        throw new Error(`Archive entry "${header.name}" resolves outside extraction directory`);
+                    }
+
+                    if (header.type === "directory") {
+                        fs.mkdirSync(destination, {
+                            recursive: true,
+                            mode: ((header.mode || 0o700) & 0o777) | 0o700,
+                        });
+                        stream.on("error", fail);
+                        stream.on("end", next);
+                        stream.resume();
+                        return;
+                    }
+
+                    const size = Number(header.size);
+                    if (!Number.isSafeInteger(size) || size < 0) {
+                        throw new Error(`Archive entry "${header.name}" has an invalid size`);
+                    }
+                    extractedBytes += size;
+                    if (extractedBytes > MAX_EXTRACTED_BYTES) {
+                        throw new Error(`Archive expands beyond ${MAX_EXTRACTED_BYTES} bytes`);
+                    }
+
+                    fs.mkdirSync(path.dirname(destination), {recursive: true, mode: 0o700});
+                    const output = fs.createWriteStream(destination, {
+                        flags: "wx",
+                        mode: (header.mode || 0o600) & 0o777,
+                    });
+                    stream.on("error", fail);
+                    output.on("error", fail);
+                    output.on("finish", next);
+                    stream.pipe(output);
+                } catch (e) {
+                    stream.resume();
+                    fail(e);
+                }
+            });
+            extract.on("error", fail);
+            gunzip.on("error", fail);
+            input.on("error", fail);
+            extract.on("finish", () => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                if (topLevel === null) {
+                    reject(new Error("Archive does not contain a valid map directory"));
+                    return;
+                }
+                const extractedRoot = path.join(root, topLevel);
+                try {
+                    if (!fs.lstatSync(extractedRoot).isDirectory()) {
+                        reject(new Error("Archive top-level entry must be a directory"));
+                        return;
+                    }
+                } catch (_) {
+                    reject(new Error("Archive does not contain a valid map directory"));
+                    return;
+                }
+                resolve(topLevel);
+            });
+
+            input.pipe(gunzip).pipe(extract);
+        });
+    }
+
+    /**
+     * @private
+     * @param {string} name
+     * @returns {string}
+     */
+    _normalizeArchiveEntryName(name) {
+        if (typeof name !== "string" || name.length === 0 || name.includes("\0") || name.includes("\\")) {
+            throw new Error("Archive contains an invalid entry name");
+        }
+
+        let canonical = name.replace(/\/+$/g, "");
+        while (canonical.startsWith("./")) {
+            canonical = canonical.substring(2);
+        }
+        if (canonical.length === 0 || path.posix.isAbsolute(canonical) || /^[a-zA-Z]:/.test(canonical)) {
+            throw new Error(`Archive contains unsafe entry path "${name}"`);
+        }
+
+        const normalized = path.posix.normalize(canonical);
+        if (normalized === ".." || normalized.startsWith("../") || normalized !== canonical) {
+            throw new Error(`Archive contains unsafe entry path "${name}"`);
+        }
+
+        return normalized;
+    }
+
+    /**
      * Generate a filesystem-safe ID from a name.
      *
      * @private
@@ -520,7 +795,7 @@ class DreameMapManagementCapability extends MapManagementCapability {
             .replace(/[^a-z0-9]/g, "_")
             .replace(/_+/g, "_")
             .replace(/^_|_$/g, "")
-            .substring(0, 32);
+            .substring(0, 32) || "map";
 
         const timestamp = Date.now().toString(36);
         return `${safeName}_${timestamp}`;
