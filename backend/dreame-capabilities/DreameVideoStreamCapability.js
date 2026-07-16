@@ -224,7 +224,7 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
     _getHostAddress() {
         const addresses = Object.values(os.networkInterfaces())
             .flat()
-            .filter(address => address && (address.family === "IPv4" || address.family === 4) && !address.internal);
+            .filter(address => address && address.family === "IPv4" && !address.internal);
         const privateAddress = addresses.find(address => {
             return /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(address.address);
         });
