@@ -4,7 +4,7 @@ const NotImplementedError = require("../../../backend/lib/core/NotImplementedErr
 /**
  * Capability for managing the vacuum's video/camera stream.
  * Handles starting/stopping the video pipeline (LD_PRELOAD + go2rtc),
- * retrieving stream URLs, and toggling video quality (high/low resolution).
+ * and retrieving stream URLs.
  *
  * @template {import("../../../backend/lib/core/ValetudoRobot")} T
  * @extends Capability<T>
@@ -50,27 +50,6 @@ class VideoStreamCapability extends Capability {
         throw new NotImplementedError();
     }
 
-    /**
-     * Set video quality (high or low resolution)
-     *
-     * @abstract
-     * @param {string} quality - "high" or "low"
-     * @returns {Promise<void>}
-     */
-    async setVideoQuality(quality) {
-        throw new NotImplementedError();
-    }
-
-    /**
-     * Get current video quality setting
-     *
-     * @abstract
-     * @returns {Promise<string>}
-     */
-    async getVideoQuality() {
-        throw new NotImplementedError();
-    }
-
     getType() {
         return VideoStreamCapability.TYPE;
     }
@@ -79,7 +58,6 @@ class VideoStreamCapability extends Capability {
 /**
  * @typedef {object} VideoStreamStatus
  * @property {boolean} active - Whether the stream is currently running
- * @property {string} [quality] - Current quality setting ("high" or "low")
  * @property {number} [pid] - PID of the video_monitor process if running
  * @property {number} [go2rtcPid] - PID of go2rtc if running
  */

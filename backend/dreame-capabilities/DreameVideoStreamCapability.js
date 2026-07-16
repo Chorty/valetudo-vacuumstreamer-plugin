@@ -1,8 +1,7 @@
+const fs = require("fs");
 const Logger = require("../../../backend/lib/Logger");
 const VideoStreamCapability = require("../core-capabilities/VideoStreamCapability");
-const {exec, execSync, spawn} = require("child_process");
-const fs = require("fs");
-const path = require("path");
+const {execSync, spawn} = require("child_process");
 
 /**
  * Dreame-specific video stream capability.
@@ -48,8 +47,6 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
         // Track child processes
         this._videoMonitorProc = null;
         this._go2rtcProc = null;
-        this._currentQuality = "high";
-
         // Status cache to avoid repeated pidof shell spawns on rapid polls
         this._statusCache = null;
         this._statusCacheTs = 0;
@@ -69,7 +66,6 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
 
         this._statusCache = {
             active: videoMonitorPid !== null && go2rtcPid !== null,
-            quality: this._currentQuality,
             pid: videoMonitorPid,
             go2rtcPid: go2rtcPid,
         };
@@ -150,11 +146,19 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
 
         // Kill via stored handles first (targeted), then killall as safety net for untracked instances
         if (this._videoMonitorProc) {
-            try { this._videoMonitorProc.kill(); } catch (_) {}
+            try {
+                this._videoMonitorProc.kill();
+            } catch (_) {
+                // It may already have exited.
+            }
             this._videoMonitorProc = null;
         }
         if (this._go2rtcProc) {
-            try { this._go2rtcProc.kill(); } catch (_) {}
+            try {
+                this._go2rtcProc.kill();
+            } catch (_) {
+                // It may already have exited.
+            }
             this._go2rtcProc = null;
         }
         this._killProcess("video_monitor");
@@ -177,47 +181,6 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
             webrtc: `http://${host}:${port}/api/webrtc?src=vacuum`,
             hls: `http://${host}:${port}/api/stream.m3u8?src=vacuum`,
             go2rtcApi: `http://${host}:${port}/api/`,
-        };
-    }
-
-    /**
-     * @param {string} quality - "high" or "low"
-     * @returns {Promise<void>}
-     */
-    async setVideoQuality(quality) {
-        if (quality !== "high" && quality !== "low") {
-            throw new Error(`Invalid video quality: ${quality}. Must be "high" or "low".`);
-        }
-
-        // The quality toggle is done by writing to a control file or by
-        // restarting video_monitor with different params.
-        // In vacuumstreamer, this was handled by toggling the go2rtc source config.
-        this._currentQuality = quality;
-
-        Logger.info(`Video quality set to: ${quality}`);
-
-        // If stream is active, restart to apply quality change
-        const status = await this.getStreamStatus();
-        if (status.active) {
-            await this.stopStream();
-            await this._sleep(500);
-            await this.startStream();
-        }
-    }
-
-    /**
-     * @returns {Promise<string>}
-     */
-    async getVideoQuality() {
-        return this._currentQuality;
-    }
-
-    /**
-     * @returns {object}
-     */
-    getProperties() {
-        return {
-            supportedQualities: ["high", "low"],
         };
     }
 

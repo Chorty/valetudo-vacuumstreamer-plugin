@@ -20,15 +20,6 @@ class VideoStreamCapabilityRouter extends CapabilityRouter {
             }
         });
 
-        this.router.get("/quality", async (req, res) => {
-            try {
-                const quality = await this.capability.getVideoQuality();
-                res.json({quality: quality});
-            } catch (e) {
-                this.sendErrorResponse(req, res, e);
-            }
-        });
-
         this.router.put("/", this.validator, async (req, res) => {
             switch (req.body.action) {
                 case "start":
@@ -42,18 +33,6 @@ class VideoStreamCapabilityRouter extends CapabilityRouter {
                 case "stop":
                     try {
                         await this.capability.stopStream();
-                        res.sendStatus(200);
-                    } catch (e) {
-                        this.sendErrorResponse(req, res, e);
-                    }
-                    break;
-                case "set_quality":
-                    if (typeof req.body.value !== "string") {
-                        res.sendStatus(400);
-                        return;
-                    }
-                    try {
-                        await this.capability.setVideoQuality(req.body.value);
                         res.sendStatus(200);
                     } catch (e) {
                         this.sendErrorResponse(req, res, e);
