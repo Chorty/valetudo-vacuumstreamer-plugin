@@ -37,7 +37,7 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
             vacuumstreamerPath: "/data/vacuumstreamer/vacuumstreamer.so",
             go2rtcPath: "/data/vacuumstreamer/go2rtc",
             go2rtcConfigPath: "/data/vacuumstreamer/go2rtc.yaml",
-            videoMonitorPath: "/usr/bin/video_monitor",
+            videoMonitorPath: "/data/vacuumstreamer/video_monitor",
             udpPort: 6969,
             go2rtcApiPort: 1984,
             libcPath: "/data/vacuumstreamer/libc.so.6",
@@ -96,14 +96,13 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
         if (go2rtcPid === null) {
             Logger.info("Starting go2rtc...");
             try {
-                this._go2rtcProc = spawn(this.streamConfig.go2rtcPath, [
+                this._go2rtcProc = await this._spawnDetached(this.streamConfig.go2rtcPath, [
                     "-config", this.streamConfig.go2rtcConfigPath
                 ], {
                     detached: true,
                     stdio: "ignore",
                     env: Object.assign({}, process.env),
-                });
-                this._go2rtcProc.unref();
+                }, "go2rtc");
 
                 // Give go2rtc a moment to start
                 await this._sleep(1000);
@@ -125,18 +124,52 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
                 env.LD_PRELOAD = `${this.streamConfig.vacuumstreamerPath}:${this.streamConfig.libcPath}`;
             }
 
-            this._videoMonitorProc = spawn(this.streamConfig.videoMonitorPath, [], {
+            this._videoMonitorProc = await this._spawnDetached(this.streamConfig.videoMonitorPath, [], {
                 detached: true,
                 stdio: "ignore",
                 env: env,
-            });
-            this._videoMonitorProc.unref();
+            }, "video_monitor");
 
             Logger.info("Video stream pipeline started successfully");
         } catch (e) {
             Logger.error("Failed to start video_monitor", e);
             throw e;
         }
+    }
+
+    /**
+     * Start a detached child and reject on spawn failures instead of letting an
+     * unhandled ChildProcess error terminate Valetudo.
+     *
+     * @private
+     * @param {string} command
+     * @param {string[]} args
+     * @param {import("child_process").SpawnOptions} options
+     * @param {string} label
+     * @returns {Promise<import("child_process").ChildProcess>}
+     */
+    async _spawnDetached(command, args, options, label) {
+        const child = spawn(command, args, options);
+
+        await new Promise((resolve, reject) => {
+            const onError = error => {
+                child.removeListener("spawn", onSpawn);
+                reject(error);
+            };
+            const onSpawn = () => {
+                child.removeListener("error", onError);
+                resolve();
+            };
+
+            child.once("error", onError);
+            child.once("spawn", onSpawn);
+        });
+        child.on("error", error => {
+            Logger.error(label + " process error", error);
+        });
+        child.unref();
+
+        return child;
     }
 
     /**

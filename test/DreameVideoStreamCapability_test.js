@@ -30,6 +30,23 @@ test("video capabilities no longer advertise ineffective quality methods", () =>
     assert.deepEqual(createCapability().getProperties(), {});
 });
 
+test("uses the deployed video_monitor path by default", () => {
+    assert.equal(createCapability().streamConfig.videoMonitorPath, "/data/vacuumstreamer/video_monitor");
+});
+
+test("a missing video_monitor rejects without an unhandled child error", async () => {
+    const capability = new DreameVideoStreamCapability({
+        robot: {},
+        streamConfig: {
+            videoMonitorPath: "/definitely/missing/video_monitor",
+        },
+    });
+    capability._getPidOf = processName => processName === "go2rtc" ? 202 : null;
+    capability._killProcess = () => undefined;
+
+    await assert.rejects(capability.startStream(), error => error.code === "ENOENT");
+});
+
 test("stream URLs advertise the private-LAN address", async t => {
     t.mock.method(os, "networkInterfaces", () => ({
         lo: [{address: "127.0.0.1", family: "IPv4", internal: true}],
