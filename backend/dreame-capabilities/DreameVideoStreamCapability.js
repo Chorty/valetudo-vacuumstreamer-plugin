@@ -51,6 +51,7 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
         // Status cache to avoid repeated pidof shell spawns on rapid polls
         this._statusCache = null;
         this._statusCacheTs = 0;
+        this._lifecycleQueue = Promise.resolve();
     }
 
     /**
@@ -79,6 +80,20 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
      * @returns {Promise<void>}
      */
     async startStream() {
+        return this._enqueueLifecycleOperation(async () => {
+            try {
+                await this._startStream();
+            } finally {
+                this._statusCache = null;
+            }
+        });
+    }
+
+    /**
+     * @private
+     * @returns {Promise<void>}
+     */
+    async _startStream() {
         this._statusCache = null; // Invalidate cache before checking live state
         const status = await this.getStreamStatus();
         if (status.active) {
@@ -176,6 +191,20 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
      * @returns {Promise<void>}
      */
     async stopStream() {
+        return this._enqueueLifecycleOperation(async () => {
+            try {
+                await this._stopStream();
+            } finally {
+                this._statusCache = null;
+            }
+        });
+    }
+
+    /**
+     * @private
+     * @returns {Promise<void>}
+     */
+    async _stopStream() {
         Logger.info("Stopping video stream pipeline...");
 
         // Kill via stored handles first (targeted), then killall as safety net for untracked instances
@@ -201,6 +230,18 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
         this._statusCache = null; // Invalidate cache after state change
 
         Logger.info("Video stream pipeline stopped");
+    }
+
+    /**
+     * @private
+     * @template T
+     * @param {() => Promise<T>} operation
+     * @returns {Promise<T>}
+     */
+    _enqueueLifecycleOperation(operation) {
+        const queuedOperation = this._lifecycleQueue.then(operation);
+        this._lifecycleQueue = queuedOperation.catch(() => undefined);
+        return queuedOperation;
     }
 
     /**
