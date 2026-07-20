@@ -60,3 +60,78 @@ test("stream URLs advertise the private-LAN address", async t => {
         go2rtcApi: "http://192.168.1.31:1984/api/",
     });
 });
+
+test("serializes concurrent starts into one process pipeline", async () => {
+    const capability = new DreameVideoStreamCapability({robot: {}});
+    const running = new Set();
+    const spawns = [];
+    let releaseStartup;
+    const startupGate = new Promise(resolve => {
+        releaseStartup = resolve;
+    });
+
+    capability._getPidOf = processName => running.has(processName) ? 101 : null;
+    capability._killProcess = processName => running.delete(processName);
+    capability._spawnDetached = async (command, args, options, label) => {
+        spawns.push(label);
+        running.add(label);
+        return {kill: () => running.delete(label)};
+    };
+    capability._sleep = async () => startupGate;
+
+    const first = capability.startStream();
+    const second = capability.startStream();
+    await new Promise(resolve => setImmediate(resolve));
+    releaseStartup();
+    await Promise.all([first, second]);
+
+    assert.deepEqual(spawns, ["go2rtc", "video_monitor"]);
+});
+
+test("preserves start then stop command order", async () => {
+    const capability = new DreameVideoStreamCapability({robot: {}});
+    const running = new Set();
+    let releaseStartup;
+    const startupGate = new Promise(resolve => {
+        releaseStartup = resolve;
+    });
+
+    capability._getPidOf = processName => running.has(processName) ? 101 : null;
+    capability._killProcess = processName => running.delete(processName);
+    capability._spawnDetached = async (command, args, options, label) => {
+        running.add(label);
+        return {kill: () => running.delete(label)};
+    };
+    capability._sleep = async () => startupGate;
+
+    const start = capability.startStream();
+    const stop = capability.stopStream();
+    await new Promise(resolve => setImmediate(resolve));
+    releaseStartup();
+    await Promise.all([start, stop]);
+
+    assert.deepEqual([...running], []);
+});
+
+test("continues processing lifecycle commands after a failed start", async () => {
+    const capability = new DreameVideoStreamCapability({robot: {}});
+    const running = new Set();
+    let shouldFail = true;
+
+    capability._getPidOf = processName => running.has(processName) ? 101 : null;
+    capability._killProcess = processName => running.delete(processName);
+    capability._spawnDetached = async (command, args, options, label) => {
+        if (shouldFail) {
+            shouldFail = false;
+            throw new Error("spawn failed");
+        }
+        running.add(label);
+        return {kill: () => running.delete(label)};
+    };
+    capability._sleep = async () => undefined;
+
+    await assert.rejects(capability.startStream(), /spawn failed/);
+    await capability.startStream();
+
+    assert.equal(running.has("video_monitor"), true);
+});

@@ -1,4 +1,5 @@
 const CapabilityRouter = require("../../../backend/lib/webserver/capabilityRouters/CapabilityRouter");
+const TextToSpeechCapabilityBusyError = require("../core-capabilities/TextToSpeechCapabilityBusyError");
 
 class TextToSpeechCapabilityRouter extends CapabilityRouter {
     initRoutes() {
@@ -22,7 +23,7 @@ class TextToSpeechCapabilityRouter extends CapabilityRouter {
                         await this.capability.speak(req.body.text, req.body.language);
                         res.sendStatus(200);
                     } catch (e) {
-                        this.sendErrorResponse(req, res, e);
+                        this.sendAudioErrorResponse(req, res, e);
                     }
                     break;
                 case "play_file":
@@ -34,7 +35,7 @@ class TextToSpeechCapabilityRouter extends CapabilityRouter {
                         await this.capability.playAudioFile(req.body.filePath);
                         res.sendStatus(200);
                     } catch (e) {
-                        this.sendErrorResponse(req, res, e);
+                        this.sendAudioErrorResponse(req, res, e);
                     }
                     break;
                 case "stop":
@@ -49,6 +50,20 @@ class TextToSpeechCapabilityRouter extends CapabilityRouter {
                     res.sendStatus(400);
             }
         });
+    }
+
+    /**
+     * @private
+     * @param {import("express").Request} req
+     * @param {import("express").Response} res
+     * @param {Error} err
+     */
+    sendAudioErrorResponse(req, res, err) {
+        if (err instanceof TextToSpeechCapabilityBusyError) {
+            res.status(409).json(err.message);
+        } else {
+            this.sendErrorResponse(req, res, err);
+        }
     }
 }
 
