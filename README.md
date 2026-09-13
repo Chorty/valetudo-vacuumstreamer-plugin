@@ -1,6 +1,20 @@
 # valetudo-vacuumstreamer-plugin
 VacuumStreamer plugin capabilities for Valetudo (Dreame L10S Pro Ultra Heat) — video streaming, TTS, floor management
 
+## Runtime Switches
+
+At Valetudo startup the plugin reads `/data/vacuumstreamer/vacuumstreamer.conf`, the same file the native VacuumStreamer boot scripts use. A capability that is switched off is not registered, so its REST routes, MQTT topics and Home Assistant entities are absent. Restart Valetudo after changing a switch.
+
+| Switch | Capability |
+|---|---|
+| `CAMERA` | `VideoStreamCapability` |
+| `TTS` | `TextToSpeechCapability` |
+| `MAP_MANAGEMENT` | `MapManagementCapability` |
+
+A missing file, empty value or invalid value keeps the capability on. Invalid values are logged as warnings. See the native VacuumStreamer README for the file format, `CAMERA_LOGIN` and `HTTP_BRIDGE`.
+
+Video start runs `go2rtc_launch.sh --check` and `video_monitor_launch.sh --check` before touching any running process. When the camera is switched off or the camera login is misconfigured, the start is refused with the script's reason. Installs without the launch scripts fall back to starting the binaries directly, without switch or login checks.
+
 ## Home Assistant and MQTT
 
 When both MQTT and Home Assistant autodiscovery are enabled in Valetudo, this plugin adds the following entities to the robot device:

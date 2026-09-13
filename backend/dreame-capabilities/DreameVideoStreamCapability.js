@@ -2,7 +2,7 @@ const fs = require("fs");
 const Logger = require("../../../backend/lib/Logger");
 const os = require("os");
 const VideoStreamCapability = require("../core-capabilities/VideoStreamCapability");
-const {execSync, spawn} = require("child_process");
+const {execFile, execSync, spawn} = require("child_process");
 
 /**
  * Dreame-specific video stream capability.
@@ -29,6 +29,8 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
      * @param {number} [options.streamConfig.udpPort] - UDP port for H.264 stream (default: 6969)
      * @param {number} [options.streamConfig.go2rtcApiPort] - go2rtc API port (default: 1984)
      * @param {string} [options.streamConfig.libcPath] - Path to libc.so.6 override
+     * @param {string} [options.streamConfig.go2rtcLauncherPath] - Script that applies the switches and camera login, then starts go2rtc
+     * @param {string} [options.streamConfig.videoMonitorLauncherPath] - Script that applies the switches, then starts video_monitor
      */
     constructor(options) {
         super(options);
@@ -41,6 +43,8 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
             udpPort: 6969,
             go2rtcApiPort: 1984,
             libcPath: "/data/vacuumstreamer/libc.so.6",
+            go2rtcLauncherPath: "/data/vacuumstreamer/go2rtc_launch.sh",
+            videoMonitorLauncherPath: "/data/vacuumstreamer/video_monitor_launch.sh",
         };
 
         this.streamConfig = Object.assign({}, defaults, options.streamConfig || {});
@@ -52,6 +56,7 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
         this._statusCache = null;
         this._statusCacheTs = 0;
         this._lifecycleQueue = Promise.resolve();
+        this._legacyLaunchWarningLogged = false;
     }
 
     /**
@@ -101,6 +106,17 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
             return;
         }
 
+        const useLaunchers = this._launchersAvailable();
+
+        if (useLaunchers) {
+            // Validate the switches and camera login before touching running processes
+            await this._runLauncherCheck(this.streamConfig.go2rtcLauncherPath);
+            await this._runLauncherCheck(this.streamConfig.videoMonitorLauncherPath);
+        } else if (!this._legacyLaunchWarningLogged) {
+            Logger.warn("VacuumStreamer launch scripts not found; starting the binaries directly without switch or login checks");
+            this._legacyLaunchWarningLogged = true;
+        }
+
         Logger.info("Starting video stream pipeline...");
 
         // Step 1: Kill any existing video_monitor processes
@@ -111,13 +127,21 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
         if (go2rtcPid === null) {
             Logger.info("Starting go2rtc...");
             try {
-                this._go2rtcProc = await this._spawnDetached(this.streamConfig.go2rtcPath, [
-                    "-config", this.streamConfig.go2rtcConfigPath
-                ], {
-                    detached: true,
-                    stdio: "ignore",
-                    env: Object.assign({}, process.env),
-                }, "go2rtc");
+                if (useLaunchers) {
+                    this._go2rtcProc = await this._spawnDetached(this.streamConfig.go2rtcLauncherPath, [], {
+                        detached: true,
+                        stdio: "ignore",
+                        env: this._launcherEnv(),
+                    }, "go2rtc");
+                } else {
+                    this._go2rtcProc = await this._spawnDetached(this.streamConfig.go2rtcPath, [
+                        "-config", this.streamConfig.go2rtcConfigPath
+                    ], {
+                        detached: true,
+                        stdio: "ignore",
+                        env: Object.assign({}, process.env),
+                    }, "go2rtc");
+                }
 
                 // Give go2rtc a moment to start
                 await this._sleep(1000);
@@ -130,20 +154,28 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
         // Step 3: Start video_monitor with LD_PRELOAD
         Logger.info("Starting video_monitor with vacuumstreamer.so...");
         try {
-            const env = Object.assign({}, process.env, {
-                LD_PRELOAD: this.streamConfig.vacuumstreamerPath,
-            });
+            if (useLaunchers) {
+                this._videoMonitorProc = await this._spawnDetached(this.streamConfig.videoMonitorLauncherPath, [], {
+                    detached: true,
+                    stdio: "ignore",
+                    env: this._launcherEnv(),
+                }, "video_monitor");
+            } else {
+                const env = Object.assign({}, process.env, {
+                    LD_PRELOAD: this.streamConfig.vacuumstreamerPath,
+                });
 
-            // If a custom libc is needed (for older firmware)
-            if (this.streamConfig.libcPath && fs.existsSync(this.streamConfig.libcPath)) {
-                env.LD_PRELOAD = `${this.streamConfig.vacuumstreamerPath}:${this.streamConfig.libcPath}`;
+                // If a custom libc is needed (for older firmware)
+                if (this.streamConfig.libcPath && fs.existsSync(this.streamConfig.libcPath)) {
+                    env.LD_PRELOAD = `${this.streamConfig.vacuumstreamerPath}:${this.streamConfig.libcPath}`;
+                }
+
+                this._videoMonitorProc = await this._spawnDetached(this.streamConfig.videoMonitorPath, [], {
+                    detached: true,
+                    stdio: "ignore",
+                    env: env,
+                }, "video_monitor");
             }
-
-            this._videoMonitorProc = await this._spawnDetached(this.streamConfig.videoMonitorPath, [], {
-                detached: true,
-                stdio: "ignore",
-                env: env,
-            }, "video_monitor");
 
             Logger.info("Video stream pipeline started successfully");
         } catch (e) {
@@ -257,6 +289,61 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
             hls: `http://${host}:${port}/api/stream.m3u8?src=vacuum`,
             go2rtcApi: `http://${host}:${port}/api/`,
         };
+    }
+
+    /**
+     * The launch scripts apply vacuumstreamer.conf and the camera login. Older
+     * installs without them fall back to starting the binaries directly.
+     *
+     * @private
+     * @returns {boolean}
+     */
+    _launchersAvailable() {
+        return fs.existsSync(this.streamConfig.go2rtcLauncherPath) &&
+            fs.existsSync(this.streamConfig.videoMonitorLauncherPath);
+    }
+
+    /**
+     * Runs a launch script with --check. It rejects with the script's reason when
+     * the camera is switched off or the camera login is misconfigured.
+     *
+     * @private
+     * @param {string} launcherPath
+     * @returns {Promise<void>}
+     */
+    _runLauncherCheck(launcherPath) {
+        return new Promise((resolve, reject) => {
+            execFile(launcherPath, ["--check"], {
+                env: this._launcherEnv(),
+                timeout: 5000,
+            }, (error, stdout, stderr) => {
+                if (error) {
+                    const detail = String(stderr).trim() || error.message;
+
+                    reject(new Error(`Video stream start refused: ${detail}`));
+                } else {
+                    resolve();
+                }
+            });
+        });
+    }
+
+    /**
+     * The launch scripts set the preload hook and credential lookup themselves,
+     * so inherited values are removed.
+     *
+     * @private
+     * @returns {Object<string, string>}
+     */
+    _launcherEnv() {
+        const env = Object.assign({}, process.env);
+
+        delete env.LD_PRELOAD;
+        delete env.CREDENTIALS_DIRECTORY;
+        delete env.GO2RTC_USERNAME;
+        delete env.GO2RTC_PASSWORD;
+
+        return env;
     }
 
     /**
