@@ -28,6 +28,7 @@ test("a missing config file uses the defaults without warnings", () => {
 
     assert.equal(config.found, false);
     assert.deepEqual(config.switches, DEFAULT_SWITCHES);
+    assert.deepEqual(config.settings, {CAMERA_MODE: "on_demand"});
     assert.deepEqual(config.warnings, []);
 });
 
@@ -90,8 +91,19 @@ test("an invalid value falls back to the default and warns", () => {
     ]);
 });
 
-test("unknown keys are ignored for forward compatibility", () => {
-    const config = load("CAMERA_MODE=on_demand\n");
+test("the camera mode can be always", () => {
+    assert.deepEqual(load("CAMERA_MODE=always\n").settings, {CAMERA_MODE: "always"});
+});
+
+test("an invalid camera mode falls back to on_demand and warns", () => {
+    const config = load("CAMERA_MODE=sometimes\n");
+
+    assert.deepEqual(config.settings, {CAMERA_MODE: "on_demand"});
+    assert.deepEqual(config.warnings, ["invalid value for CAMERA_MODE in /test/vacuumstreamer.conf; using on_demand"]);
+});
+
+test("settings only the native scripts use are ignored", () => {
+    const config = load("CAMERA_IDLE_SECONDS=180\nCAMERA_STALL_SECONDS=20\n");
 
     assert.deepEqual(config.switches, DEFAULT_SWITCHES);
     assert.deepEqual(config.warnings, []);

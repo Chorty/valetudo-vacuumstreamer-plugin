@@ -15,6 +15,10 @@ const {execFile, execSync, spawn} = require("child_process");
  * The vacuumstreamer .so hooks into the vendor's `video_monitor` binary to capture
  * the camera feed without modifying the stock firmware binary.
  *
+ * Installs with the native camera_ctl.sh delegate start and stop to it, which
+ * applies the runtime switches and camera login and captures on demand. Older
+ * installs start and stop the binaries directly.
+ *
  * @extends VideoStreamCapability<import("../../../backend/lib/robots/dreame/DreameValetudoRobot")>
  */
 class DreameVideoStreamCapability extends VideoStreamCapability {
@@ -29,8 +33,9 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
      * @param {number} [options.streamConfig.udpPort] - UDP port for H.264 stream (default: 6969)
      * @param {number} [options.streamConfig.go2rtcApiPort] - go2rtc API port (default: 1984)
      * @param {string} [options.streamConfig.libcPath] - Path to libc.so.6 override
-     * @param {string} [options.streamConfig.go2rtcLauncherPath] - Script that applies the switches and camera login, then starts go2rtc
-     * @param {string} [options.streamConfig.videoMonitorLauncherPath] - Script that applies the switches, then starts video_monitor
+     * @param {string} [options.streamConfig.cameraCtlPath] - Native script that starts, pauses and reports the camera
+     * @param {string} [options.streamConfig.pausedFlagPath] - File camera_ctl.sh creates while the camera is paused
+     * @param {string} [options.streamConfig.cameraMode] - CAMERA_MODE from vacuumstreamer.conf, reported in the status
      */
     constructor(options) {
         super(options);
@@ -43,8 +48,9 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
             udpPort: 6969,
             go2rtcApiPort: 1984,
             libcPath: "/data/vacuumstreamer/libc.so.6",
-            go2rtcLauncherPath: "/data/vacuumstreamer/go2rtc_launch.sh",
-            videoMonitorLauncherPath: "/data/vacuumstreamer/video_monitor_launch.sh",
+            cameraCtlPath: "/data/vacuumstreamer/camera_ctl.sh",
+            pausedFlagPath: "/tmp/vacuumstreamer/camera_paused",
+            cameraMode: "on_demand",
         };
 
         this.streamConfig = Object.assign({}, defaults, options.streamConfig || {});
@@ -71,11 +77,25 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
         const videoMonitorPid = this._getPidOf("video_monitor");
         const go2rtcPid = this._getPidOf("go2rtc");
 
-        this._statusCache = {
-            active: videoMonitorPid !== null && go2rtcPid !== null,
-            pid: videoMonitorPid,
-            go2rtcPid: go2rtcPid,
-        };
+        if (this._cameraCtlAvailable()) {
+            const paused = fs.existsSync(this.streamConfig.pausedFlagPath);
+
+            // On-demand capture leaves video_monitor stopped until someone watches
+            this._statusCache = {
+                active: go2rtcPid !== null && !paused,
+                capturing: videoMonitorPid !== null,
+                paused: paused,
+                mode: this.streamConfig.cameraMode,
+                pid: videoMonitorPid,
+                go2rtcPid: go2rtcPid,
+            };
+        } else {
+            this._statusCache = {
+                active: videoMonitorPid !== null && go2rtcPid !== null,
+                pid: videoMonitorPid,
+                go2rtcPid: go2rtcPid,
+            };
+        }
         this._statusCacheTs = now;
 
         return this._statusCache;
@@ -99,22 +119,23 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
      * @returns {Promise<void>}
      */
     async _startStream() {
+        if (this._cameraCtlAvailable()) {
+            Logger.info("Starting video stream through camera_ctl.sh...");
+            await this._runCameraCtl("start");
+            Logger.info("Video stream started");
+            return;
+        }
+
+        if (!this._legacyLaunchWarningLogged) {
+            Logger.warn("VacuumStreamer camera_ctl.sh not found; starting the binaries directly without switch or login checks");
+            this._legacyLaunchWarningLogged = true;
+        }
+
         this._statusCache = null; // Invalidate cache before checking live state
         const status = await this.getStreamStatus();
         if (status.active) {
             Logger.info("Video stream already active, skipping start");
             return;
-        }
-
-        const useLaunchers = this._launchersAvailable();
-
-        if (useLaunchers) {
-            // Validate the switches and camera login before touching running processes
-            await this._runLauncherCheck(this.streamConfig.go2rtcLauncherPath);
-            await this._runLauncherCheck(this.streamConfig.videoMonitorLauncherPath);
-        } else if (!this._legacyLaunchWarningLogged) {
-            Logger.warn("VacuumStreamer launch scripts not found; starting the binaries directly without switch or login checks");
-            this._legacyLaunchWarningLogged = true;
         }
 
         Logger.info("Starting video stream pipeline...");
@@ -127,21 +148,13 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
         if (go2rtcPid === null) {
             Logger.info("Starting go2rtc...");
             try {
-                if (useLaunchers) {
-                    this._go2rtcProc = await this._spawnDetached(this.streamConfig.go2rtcLauncherPath, [], {
-                        detached: true,
-                        stdio: "ignore",
-                        env: this._launcherEnv(),
-                    }, "go2rtc");
-                } else {
-                    this._go2rtcProc = await this._spawnDetached(this.streamConfig.go2rtcPath, [
-                        "-config", this.streamConfig.go2rtcConfigPath
-                    ], {
-                        detached: true,
-                        stdio: "ignore",
-                        env: Object.assign({}, process.env),
-                    }, "go2rtc");
-                }
+                this._go2rtcProc = await this._spawnDetached(this.streamConfig.go2rtcPath, [
+                    "-config", this.streamConfig.go2rtcConfigPath
+                ], {
+                    detached: true,
+                    stdio: "ignore",
+                    env: Object.assign({}, process.env),
+                }, "go2rtc");
 
                 // Give go2rtc a moment to start
                 await this._sleep(1000);
@@ -154,28 +167,20 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
         // Step 3: Start video_monitor with LD_PRELOAD
         Logger.info("Starting video_monitor with vacuumstreamer.so...");
         try {
-            if (useLaunchers) {
-                this._videoMonitorProc = await this._spawnDetached(this.streamConfig.videoMonitorLauncherPath, [], {
-                    detached: true,
-                    stdio: "ignore",
-                    env: this._launcherEnv(),
-                }, "video_monitor");
-            } else {
-                const env = Object.assign({}, process.env, {
-                    LD_PRELOAD: this.streamConfig.vacuumstreamerPath,
-                });
+            const env = Object.assign({}, process.env, {
+                LD_PRELOAD: this.streamConfig.vacuumstreamerPath,
+            });
 
-                // If a custom libc is needed (for older firmware)
-                if (this.streamConfig.libcPath && fs.existsSync(this.streamConfig.libcPath)) {
-                    env.LD_PRELOAD = `${this.streamConfig.vacuumstreamerPath}:${this.streamConfig.libcPath}`;
-                }
-
-                this._videoMonitorProc = await this._spawnDetached(this.streamConfig.videoMonitorPath, [], {
-                    detached: true,
-                    stdio: "ignore",
-                    env: env,
-                }, "video_monitor");
+            // If a custom libc is needed (for older firmware)
+            if (this.streamConfig.libcPath && fs.existsSync(this.streamConfig.libcPath)) {
+                env.LD_PRELOAD = `${this.streamConfig.vacuumstreamerPath}:${this.streamConfig.libcPath}`;
             }
+
+            this._videoMonitorProc = await this._spawnDetached(this.streamConfig.videoMonitorPath, [], {
+                detached: true,
+                stdio: "ignore",
+                env: env,
+            }, "video_monitor");
 
             Logger.info("Video stream pipeline started successfully");
         } catch (e) {
@@ -237,6 +242,15 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
      * @returns {Promise<void>}
      */
     async _stopStream() {
+        if (this._cameraCtlAvailable()) {
+            Logger.info("Pausing video stream through camera_ctl.sh...");
+            await this._runCameraCtl("stop");
+            this._videoMonitorProc = null;
+            this._go2rtcProc = null;
+            Logger.info("Video stream paused");
+            return;
+        }
+
         Logger.info("Stopping video stream pipeline...");
 
         // Kill via stored handles first (targeted), then killall as safety net for untracked instances
@@ -292,35 +306,32 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
     }
 
     /**
-     * The launch scripts apply vacuumstreamer.conf and the camera login. Older
-     * installs without them fall back to starting the binaries directly.
-     *
      * @private
      * @returns {boolean}
      */
-    _launchersAvailable() {
-        return fs.existsSync(this.streamConfig.go2rtcLauncherPath) &&
-            fs.existsSync(this.streamConfig.videoMonitorLauncherPath);
+    _cameraCtlAvailable() {
+        return fs.existsSync(this.streamConfig.cameraCtlPath);
     }
 
     /**
-     * Runs a launch script with --check. It rejects with the script's reason when
+     * Runs camera_ctl.sh. It rejects with the script's reason, for example when
      * the camera is switched off or the camera login is misconfigured.
      *
      * @private
-     * @param {string} launcherPath
+     * @param {"start"|"stop"} action
      * @returns {Promise<void>}
      */
-    _runLauncherCheck(launcherPath) {
+    _runCameraCtl(action) {
         return new Promise((resolve, reject) => {
-            execFile(launcherPath, ["--check"], {
-                env: this._launcherEnv(),
-                timeout: 5000,
+            execFile(this.streamConfig.cameraCtlPath, [action], {
+                env: this._scriptEnv(),
+                // Covers camera_ctl.sh waiting up to CAMERA_WAKE_TIMEOUT_SECONDS for video_monitor
+                timeout: 30000,
             }, (error, stdout, stderr) => {
                 if (error) {
                     const detail = String(stderr).trim() || error.message;
 
-                    reject(new Error(`Video stream start refused: ${detail}`));
+                    reject(new Error(`Video stream ${action} failed: ${detail}`));
                 } else {
                     resolve();
                 }
@@ -329,13 +340,13 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
     }
 
     /**
-     * The launch scripts set the preload hook and credential lookup themselves,
+     * The native scripts set the preload hook and credential lookup themselves,
      * so inherited values are removed.
      *
      * @private
      * @returns {Object<string, string>}
      */
-    _launcherEnv() {
+    _scriptEnv() {
         const env = Object.assign({}, process.env);
 
         delete env.LD_PRELOAD;

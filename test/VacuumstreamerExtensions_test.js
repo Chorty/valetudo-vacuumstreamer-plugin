@@ -8,7 +8,7 @@ const registerVacuumstreamerCapabilities = require("../backend/VacuumstreamerExt
 const TextToSpeechCapability = require("../backend/core-capabilities/TextToSpeechCapability");
 const VideoStreamCapability = require("../backend/core-capabilities/VideoStreamCapability");
 
-function register(t, switches, warnings = []) {
+function register(t, options = {}) {
     // Floor management creates its storage directory on construction
     t.mock.method(fs, "mkdirSync", () => undefined);
 
@@ -27,8 +27,9 @@ function register(t, switches, warnings = []) {
                 TTS: true,
                 MAP_MANAGEMENT: true,
                 HTTP_BRIDGE: true,
-            }, switches),
-            warnings: warnings,
+            }, options.switches),
+            settings: Object.assign({CAMERA_MODE: "on_demand"}, options.settings),
+            warnings: options.warnings ?? [],
         }),
     });
 
@@ -40,7 +41,7 @@ function types(capabilities) {
 }
 
 test("registers every capability when all switches are on", t => {
-    assert.deepEqual(types(register(t, {})), [
+    assert.deepEqual(types(register(t)), [
         VideoStreamCapability.TYPE,
         TextToSpeechCapability.TYPE,
         MapManagementCapability.TYPE,
@@ -48,29 +49,33 @@ test("registers every capability when all switches are on", t => {
 });
 
 test("does not register the camera when it is switched off", t => {
-    assert.deepEqual(types(register(t, {CAMERA: false})), [
+    assert.deepEqual(types(register(t, {switches: {CAMERA: false}})), [
         TextToSpeechCapability.TYPE,
         MapManagementCapability.TYPE,
     ]);
 });
 
 test("does not register TTS or floor management when they are switched off", t => {
-    assert.deepEqual(types(register(t, {TTS: false, MAP_MANAGEMENT: false})), [
+    assert.deepEqual(types(register(t, {switches: {TTS: false, MAP_MANAGEMENT: false}})), [
         VideoStreamCapability.TYPE,
     ]);
 });
 
-test("the camera capability starts through the launch scripts", t => {
-    const [video] = register(t, {TTS: false, MAP_MANAGEMENT: false});
+test("the camera capability uses camera_ctl.sh and the configured mode", t => {
+    const [video] = register(t, {
+        switches: {TTS: false, MAP_MANAGEMENT: false},
+        settings: {CAMERA_MODE: "always"},
+    });
 
-    assert.equal(video.streamConfig.go2rtcLauncherPath, "/data/vacuumstreamer/go2rtc_launch.sh");
-    assert.equal(video.streamConfig.videoMonitorLauncherPath, "/data/vacuumstreamer/video_monitor_launch.sh");
+    assert.equal(video.streamConfig.cameraCtlPath, "/data/vacuumstreamer/camera_ctl.sh");
+    assert.equal(video.streamConfig.pausedFlagPath, "/tmp/vacuumstreamer/camera_paused");
+    assert.equal(video.streamConfig.cameraMode, "always");
 });
 
 test("config warnings are logged", t => {
     const warn = t.mock.method(Logger, "warn", () => undefined);
 
-    register(t, {}, ["invalid value for CAMERA in /test/vacuumstreamer.conf; using on"]);
+    register(t, {warnings: ["invalid value for CAMERA in /test/vacuumstreamer.conf; using on"]});
 
     assert.deepEqual(warn.mock.calls.map(call => call.arguments), [
         ["VacuumStreamer: invalid value for CAMERA in /test/vacuumstreamer.conf; using on"],

@@ -43,6 +43,7 @@ function parseConfigText(text) {
  * @property {string} path
  * @property {boolean} found - Whether the config file was read
  * @property {Object<string, boolean>} switches - true when switched on
+ * @property {{CAMERA_MODE: string}} settings
  * @property {Array<string>} warnings
  */
 
@@ -90,10 +91,23 @@ function loadVacuumstreamerConfig(options = {}) {
         }
     }
 
+    let cameraMode = values.CAMERA_MODE;
+
+    if (cameraMode !== "on_demand" && cameraMode !== "always") {
+        if (cameraMode !== undefined && cameraMode !== "") {
+            warnings.push(`invalid value for CAMERA_MODE in ${path}; using on_demand`);
+        }
+
+        cameraMode = "on_demand";
+    }
+
     return {
         path: path,
         found: found,
         switches: switches,
+        settings: {
+            CAMERA_MODE: cameraMode,
+        },
         warnings: warnings,
     };
 }
