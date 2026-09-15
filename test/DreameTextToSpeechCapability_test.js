@@ -73,6 +73,23 @@ test("allows sequential speech after a completed job", async t => {
     assert.deepEqual(fs.readdirSync(capability.ttsConfig.tempDir), []);
 });
 
+test("notifies onSpeakingChanged listeners on every start and stop, but not on a no-op stop", async t => {
+    const capability = createCapability(t);
+    const transitions = [];
+    capability.onSpeakingChanged(speaking => transitions.push(speaking));
+
+    capability._downloadTTSAudio = async () => undefined;
+    capability._convertToWav = async () => undefined;
+    capability._playAudio = async () => undefined;
+
+    await capability.speak("first");
+    assert.deepEqual(transitions, [true, false]);
+
+    // Nothing is playing, so this must not re-publish an already-false state
+    await capability.stopAudio();
+    assert.deepEqual(transitions, [true, false]);
+});
+
 test("uses the same exclusive gate for local audio files", async t => {
     const capability = createCapability(t);
     const audioFile = path.join(capability.ttsConfig.tempDir, "test.wav");

@@ -47,7 +47,6 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
             throw new Error(`downloadTimeoutMs must be an integer between ${MIN_DOWNLOAD_TIMEOUT_MS} and ${MAX_DOWNLOAD_TIMEOUT_MS}`);
         }
 
-        this._speaking = false;
         this._currentText = null;
         this._playerProcess = null;
         this._conversionProcess = null;
@@ -78,7 +77,7 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
             Logger.info(`TTS: Speaking "${text}" in language "${lang}"`);
 
             try {
-                this._speaking = true;
+                this._setSpeaking(true);
                 this._currentText = text;
 
                 await this._downloadTTSAudio(text, lang, audioFile, signal);
@@ -90,7 +89,7 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
                 Logger.error("TTS: Failed to speak", e);
                 throw e;
             } finally {
-                this._speaking = false;
+                this._setSpeaking(false);
                 this._currentText = null;
                 fs.rmSync(workDir, {recursive: true, force: true});
             }
@@ -110,10 +109,10 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
             Logger.info(`TTS: Playing audio file ${filePath}`);
 
             try {
-                this._speaking = true;
+                this._setSpeaking(true);
                 await this._playAudio(filePath, signal);
             } finally {
-                this._speaking = false;
+                this._setSpeaking(false);
             }
         });
     }
@@ -139,7 +138,7 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
 
         this._stopPlaybackProcesses();
 
-        this._speaking = false;
+        this._setSpeaking(false);
         this._currentText = null;
 
         if (activeJob !== null) {

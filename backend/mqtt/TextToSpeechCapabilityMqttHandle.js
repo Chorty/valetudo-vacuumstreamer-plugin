@@ -4,6 +4,7 @@ const ComponentType = require("../../../backend/lib/mqtt/homeassistant/Component
 const DataType = require("../../../backend/lib/mqtt/homie/DataType");
 const EntityCategory = require("../../../backend/lib/mqtt/homeassistant/EntityCategory");
 const InLineHassComponent = require("../../../backend/lib/mqtt/homeassistant/components/InLineHassComponent");
+const Logger = require("../../../backend/lib/Logger");
 const PropertyMqttHandle = require("../../../backend/lib/mqtt/handles/PropertyMqttHandle");
 
 class TextToSpeechCapabilityMqttHandle extends CapabilityMqttHandle {
@@ -47,7 +48,7 @@ class TextToSpeechCapabilityMqttHandle extends CapabilityMqttHandle {
             });
         }));
 
-        this.registerChild(new PropertyMqttHandle({
+        this.speakingProperty = new PropertyMqttHandle({
             parent: this,
             controller: this.controller,
             topicName: "speaking",
@@ -75,7 +76,18 @@ class TextToSpeechCapabilityMqttHandle extends CapabilityMqttHandle {
                     }
                 }));
             });
-        }));
+        });
+        this.registerChild(this.speakingProperty);
+
+        // Speech typically lasts a few seconds -- far shorter than the MQTT
+        // controller's 30-second periodic refresh -- so without this, most
+        // starts and stops would never be published at all. Publish this one
+        // property immediately on every transition instead of waiting for it.
+        this.capability.onSpeakingChanged(() => {
+            this.speakingProperty.refresh().catch(err => {
+                Logger.warn("TTS: failed to publish the speaking state", err);
+            });
+        });
 
         this.registerChild(new PropertyMqttHandle({
             parent: this,
