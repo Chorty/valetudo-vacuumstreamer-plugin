@@ -23,6 +23,7 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
      * @param {object} [options.ttsConfig]
      * @param {string} [options.ttsConfig.tempDir] - Directory for temp audio files
      * @param {string} [options.ttsConfig.playerCommand] - Audio player command
+     * @param {string} [options.ttsConfig.ffmpegCommand] - ffmpeg binary used to convert downloaded MP3 audio to WAV
      * @param {string} [options.ttsConfig.defaultLanguage] - Default TTS language
      * @param {number} [options.ttsConfig.maxTextLength] - Maximum text length for TTS
      * @param {number} [options.ttsConfig.downloadTimeoutMs] - TTS download timeout in milliseconds
@@ -33,6 +34,7 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
         const defaults = {
             tempDir: "/tmp",
             playerCommand: "aplay",
+            ffmpegCommand: "ffmpeg",
             defaultLanguage: "en",
             maxTextLength: 200,
             downloadTimeoutMs: 10000,
@@ -149,7 +151,7 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
      * @private
      */
     _stopPlaybackProcesses() {
-        for (const name of [this.ttsConfig.playerCommand, "ffmpeg"]) {
+        for (const name of [this.ttsConfig.playerCommand, this.ttsConfig.ffmpegCommand]) {
             try {
                 childProcess.execFileSync("killall", [name], {stdio: "ignore"});
             } catch (e) {
@@ -300,7 +302,7 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
         return new Promise((resolve, reject) => {
             // Paths are passed as arguments, never through a shell
             this._conversionProcess = childProcess.execFile(
-                "ffmpeg",
+                this.ttsConfig.ffmpegCommand,
                 ["-y", "-i", path.resolve(mp3Path), "-ar", "16000", "-ac", "1", "-f", "wav", path.resolve(wavPath)],
                 (error) => {
                     this._conversionProcess = null;

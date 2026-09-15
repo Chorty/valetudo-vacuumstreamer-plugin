@@ -48,6 +48,11 @@ test("registers every capability when all switches are on", t => {
     ]);
 });
 
+test("points the TTS capability at the robot's own ffmpeg, not the PATH lookup", t => {
+    const tts = register(t).find(capability => capability.getType() === TextToSpeechCapability.TYPE);
+    assert.equal(tts.ttsConfig.ffmpegCommand, "/data/vacuumstreamer/ffmpeg");
+});
+
 test("does not register the camera when it is switched off", t => {
     assert.deepEqual(types(register(t, {switches: {CAMERA: false}})), [
         TextToSpeechCapability.TYPE,

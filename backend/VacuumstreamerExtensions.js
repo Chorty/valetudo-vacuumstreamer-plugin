@@ -43,6 +43,7 @@ module.exports = function registerVacuumstreamerCapabilities(robot, options = {}
             ttsConfig: {
                 tempDir: "/tmp",
                 playerCommand: "aplay",
+                ffmpegCommand: "/data/vacuumstreamer/ffmpeg",
                 defaultLanguage: "en",
                 maxTextLength: 200,
             },
