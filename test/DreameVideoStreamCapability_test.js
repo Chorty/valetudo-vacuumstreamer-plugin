@@ -1,5 +1,7 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
 
 const DreameVideoStreamCapability = require("../backend/dreame-capabilities/DreameVideoStreamCapability");
@@ -7,6 +9,7 @@ const VideoStreamCapability = require("../backend/core-capabilities/VideoStreamC
 
 function createCapability() {
     const capability = new DreameVideoStreamCapability({robot: {}});
+    capability._cameraCtlAvailable = () => false;
 
     capability._getPidOf = processName => processName === "video_monitor" ? 101 : 202;
 
@@ -41,6 +44,7 @@ test("a missing video_monitor rejects without an unhandled child error", async (
             videoMonitorPath: "/definitely/missing/video_monitor",
         },
     });
+    capability._cameraCtlAvailable = () => false;
     capability._getPidOf = processName => processName === "go2rtc" ? 202 : null;
     capability._killProcess = () => undefined;
 
@@ -63,6 +67,7 @@ test("stream URLs advertise the private-LAN address", async t => {
 
 test("serializes concurrent starts into one process pipeline", async () => {
     const capability = new DreameVideoStreamCapability({robot: {}});
+    capability._cameraCtlAvailable = () => false;
     const running = new Set();
     const spawns = [];
     let releaseStartup;
@@ -90,6 +95,7 @@ test("serializes concurrent starts into one process pipeline", async () => {
 
 test("preserves start then stop command order", async () => {
     const capability = new DreameVideoStreamCapability({robot: {}});
+    capability._cameraCtlAvailable = () => false;
     const running = new Set();
     let releaseStartup;
     const startupGate = new Promise(resolve => {
@@ -115,6 +121,7 @@ test("preserves start then stop command order", async () => {
 
 test("continues processing lifecycle commands after a failed start", async () => {
     const capability = new DreameVideoStreamCapability({robot: {}});
+    capability._cameraCtlAvailable = () => false;
     const running = new Set();
     let shouldFail = true;
 
@@ -134,4 +141,168 @@ test("continues processing lifecycle commands after a failed start", async () =>
     await capability.startStream();
 
     assert.equal(running.has("video_monitor"), true);
+});
+
+function tempDirectory(t) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "vacuumstreamer-camera-"));
+    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+
+    return directory;
+}
+
+function writeScript(t, body) {
+    const scriptPath = path.join(tempDirectory(t), "camera_ctl.sh");
+    fs.writeFileSync(scriptPath, `#!/bin/sh\n${body}\n`, {mode: 0o755});
+
+    return scriptPath;
+}
+
+test("delegates start and stop to camera_ctl.sh without touching processes itself", async () => {
+    const capability = new DreameVideoStreamCapability({robot: {}});
+    const actions = [];
+    const touched = [];
+
+    capability._cameraCtlAvailable = () => true;
+    capability._runCameraCtl = async action => {
+        actions.push(action);
+    };
+    capability._killProcess = processName => touched.push(`kill ${processName}`);
+    capability._spawnDetached = async (command, args, options, label) => {
+        touched.push(`spawn ${label}`);
+        return {kill: () => undefined};
+    };
+
+    await capability.startStream();
+    await capability.stopStream();
+
+    assert.deepEqual(actions, ["start", "stop"]);
+    assert.deepEqual(touched, []);
+});
+
+test("serializes camera_ctl.sh start and stop in arrival order", async () => {
+    const capability = new DreameVideoStreamCapability({robot: {}});
+    const actions = [];
+    let releaseStart;
+    const startGate = new Promise(resolve => {
+        releaseStart = resolve;
+    });
+
+    capability._cameraCtlAvailable = () => true;
+    capability._runCameraCtl = async action => {
+        if (action === "start") {
+            await startGate;
+        }
+        actions.push(action);
+    };
+
+    const start = capability.startStream();
+    const stop = capability.stopStream();
+    await new Promise(resolve => setImmediate(resolve));
+    releaseStart();
+    await Promise.all([start, stop]);
+
+    assert.deepEqual(actions, ["start", "stop"]);
+});
+
+test("camera_ctl.sh receives the action without inherited preload or credential settings", async t => {
+    const names = ["LD_PRELOAD", "CREDENTIALS_DIRECTORY", "GO2RTC_USERNAME", "GO2RTC_PASSWORD"];
+    const saved = Object.fromEntries(names.map(name => [name, process.env[name]]));
+
+    for (const name of names) {
+        process.env[name] = "inherited";
+    }
+
+    try {
+        const capability = new DreameVideoStreamCapability({
+            robot: {},
+            streamConfig: {
+                cameraCtlPath: writeScript(t, [
+                    "[ \"$1\" = start ] || exit 2",
+                    ...names.map(name => `[ -z "\${${name}+set}" ] || exit 3`),
+                ].join("\n")),
+            },
+        });
+
+        await capability._runCameraCtl("start");
+    } finally {
+        for (const name of names) {
+            if (saved[name] === undefined) {
+                delete process.env[name];
+            } else {
+                process.env[name] = saved[name];
+            }
+        }
+    }
+});
+
+test("a refused camera_ctl.sh start reports its reason", async t => {
+    const capability = new DreameVideoStreamCapability({
+        robot: {},
+        streamConfig: {
+            cameraCtlPath: writeScript(t, "echo \"camera_ctl: CAMERA_LOGIN=on requires the directory /data/vacuumstreamer/credentials\" >&2\nexit 78"),
+        },
+    });
+
+    await assert.rejects(capability._runCameraCtl("start"), {
+        message: "Video stream start failed: camera_ctl: CAMERA_LOGIN=on requires the directory /data/vacuumstreamer/credentials",
+    });
+});
+
+test("status with camera_ctl.sh separates availability, capture and pause", async t => {
+    const pausedFlagPath = path.join(tempDirectory(t), "camera_paused");
+    const capability = new DreameVideoStreamCapability({
+        robot: {},
+        streamConfig: {
+            pausedFlagPath: pausedFlagPath,
+            cameraMode: "on_demand",
+        },
+    });
+
+    capability._cameraCtlAvailable = () => true;
+    capability._getPidOf = processName => processName === "go2rtc" ? 202 : null;
+
+    assert.deepEqual(await capability.getStreamStatus(), {
+        active: true,
+        capturing: false,
+        paused: false,
+        mode: "on_demand",
+        pid: null,
+        go2rtcPid: 202,
+    });
+
+    fs.writeFileSync(pausedFlagPath, "");
+    capability._statusCache = null;
+
+    assert.deepEqual(await capability.getStreamStatus(), {
+        active: false,
+        capturing: false,
+        paused: true,
+        mode: "on_demand",
+        pid: null,
+        go2rtcPid: 202,
+    });
+});
+
+test("without camera_ctl.sh the binaries start directly", async () => {
+    const capability = new DreameVideoStreamCapability({robot: {}});
+    const running = new Set();
+    const spawns = [];
+
+    capability._cameraCtlAvailable = () => false;
+    capability._getPidOf = processName => running.has(processName) ? 101 : null;
+    capability._killProcess = processName => running.delete(processName);
+    capability._spawnDetached = async (command, args, options, label) => {
+        spawns.push({command: command, args: args, label: label, env: options.env});
+        running.add(label);
+        return {kill: () => running.delete(label)};
+    };
+    capability._sleep = async () => undefined;
+
+    await capability.startStream();
+
+    assert.deepEqual(spawns.map(spawn => [spawn.label, spawn.command, spawn.args]), [
+        ["go2rtc", "/data/vacuumstreamer/go2rtc", ["-config", "/data/vacuumstreamer/go2rtc.yaml"]],
+        ["video_monitor", "/data/vacuumstreamer/video_monitor", []],
+    ]);
+    assert.equal(spawns[1].env.LD_PRELOAD, "/data/vacuumstreamer/vacuumstreamer.so");
 });

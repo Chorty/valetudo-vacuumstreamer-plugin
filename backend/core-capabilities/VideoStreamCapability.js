@@ -57,7 +57,10 @@ class VideoStreamCapability extends Capability {
 
 /**
  * @typedef {object} VideoStreamStatus
- * @property {boolean} active - Whether the stream is currently running
+ * @property {boolean} active - Whether the stream can be watched. Installs without camera_ctl.sh report true only while video_monitor and go2rtc both run.
+ * @property {boolean} [capturing] - Whether video_monitor is capturing (installs with camera_ctl.sh)
+ * @property {boolean} [paused] - Whether the camera is paused until the next start or reboot (installs with camera_ctl.sh)
+ * @property {string} [mode] - "on_demand" or "always" (installs with camera_ctl.sh)
  * @property {number} [pid] - PID of the video_monitor process if running
  * @property {number} [go2rtcPid] - PID of go2rtc if running
  */

@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const childProcess = require("node:child_process");
 const fs = require("node:fs");
 const https = require("node:https");
 const os = require("node:os");
@@ -70,6 +71,23 @@ test("allows sequential speech after a completed job", async t => {
     assert.equal(downloads, 2);
     assert.equal((await capability.getStatus()).speaking, false);
     assert.deepEqual(fs.readdirSync(capability.ttsConfig.tempDir), []);
+});
+
+test("notifies onSpeakingChanged listeners on every start and stop, but not on a no-op stop", async t => {
+    const capability = createCapability(t);
+    const transitions = [];
+    capability.onSpeakingChanged(speaking => transitions.push(speaking));
+
+    capability._downloadTTSAudio = async () => undefined;
+    capability._convertToWav = async () => undefined;
+    capability._playAudio = async () => undefined;
+
+    await capability.speak("first");
+    assert.deepEqual(transitions, [true, false]);
+
+    // Nothing is playing, so this must not re-publish an already-false state
+    await capability.stopAudio();
+    assert.deepEqual(transitions, [true, false]);
 });
 
 test("uses the same exclusive gate for local audio files", async t => {
@@ -184,6 +202,82 @@ test("validates the configured download timeout", () => {
         () => new DreameTextToSpeechCapability({robot: {}, ttsConfig: {downloadTimeoutMs: 99}}),
         /downloadTimeoutMs must be an integer between 100 and 120000/
     );
+});
+
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {Array<Error|null>} [results] callback error for each successive call
+ */
+function mockExecFile(t, results = []) {
+    const calls = [];
+    t.mock.method(childProcess, "execFile", (command, args, callback) => {
+        const result = results[calls.length] ?? null;
+        calls.push({command: command, args: args});
+        setImmediate(() => callback(result));
+        return {kill: () => undefined};
+    });
+    return calls;
+}
+
+test("plays a file with shell metacharacters as a single argument without a shell", async t => {
+    const capability = createCapability(t);
+    const calls = mockExecFile(t);
+    const hostile = path.join(capability.ttsConfig.tempDir, "a\"; touch pwned; $(id) \".wav");
+    fs.writeFileSync(hostile, "audio");
+
+    await capability.playAudioFile(hostile);
+
+    assert.deepEqual(calls, [{command: "aplay", args: [hostile]}]);
+});
+
+test("never passes a relative path that could be read as a player option", async t => {
+    const capability = createCapability(t);
+    const calls = mockExecFile(t);
+
+    await capability._playAudio("-D.wav", new AbortController().signal);
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].args.length, 1);
+    assert.ok(path.isAbsolute(calls[0].args[0]));
+});
+
+test("falls back from mpg123 to ffplay for MP3 files", async t => {
+    const capability = createCapability(t);
+    const mp3 = path.join(capability.ttsConfig.tempDir, "speech.mp3");
+    const calls = mockExecFile(t, [new Error("mpg123 missing")]);
+
+    await capability._playAudio(mp3, new AbortController().signal);
+
+    assert.deepEqual(calls, [
+        {command: "mpg123", args: ["-q", mp3]},
+        {command: "ffplay", args: ["-nodisp", "-autoexit", mp3]}
+    ]);
+});
+
+test("converts with ffmpeg arguments and falls back to the MP3 without ffmpeg", async t => {
+    const capability = createCapability(t);
+    const mp3 = path.join(capability.ttsConfig.tempDir, "speech \"$(id)\".mp3");
+    const wav = path.join(capability.ttsConfig.tempDir, "speech.wav");
+    fs.writeFileSync(mp3, "mp3-data");
+    const calls = mockExecFile(t, [Object.assign(new Error("not found"), {code: "ENOENT"})]);
+
+    await capability._convertToWav(mp3, wav, new AbortController().signal);
+
+    assert.deepEqual(calls, [{command: "ffmpeg", args: ["-y", "-i", mp3, "-ar", "16000", "-ac", "1", "-f", "wav", wav]}]);
+    assert.equal(fs.readFileSync(wav, "utf8"), "mp3-data");
+});
+
+test("stopping tries to end both the player and ffmpeg", t => {
+    const capability = createCapability(t, {playerCommand: "aplay"});
+    const killed = [];
+    t.mock.method(childProcess, "execFileSync", (command, args) => {
+        killed.push([command, ...args]);
+        throw new Error("no process");
+    });
+
+    capability._stopPlaybackProcesses();
+
+    assert.deepEqual(killed, [["killall", "aplay"], ["killall", "ffmpeg"]]);
 });
 
 test("maps busy audio operations to HTTP 409", () => {

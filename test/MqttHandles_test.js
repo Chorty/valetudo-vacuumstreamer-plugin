@@ -47,7 +47,8 @@ test("TTS handle exposes a Home Assistant notify entity and invokes speak", asyn
         getType: () => TextToSpeechCapability.TYPE,
         speak: async text => spoken.push(text),
         getStatus: async () => ({speaking: false}),
-        stopAudio: async () => undefined
+        stopAudio: async () => undefined,
+        onSpeakingChanged: () => undefined
     };
     const handle = createHandle(TextToSpeechCapabilityMqttHandle, capability);
     const speak = child(handle, "speak");
@@ -71,13 +72,66 @@ test("TTS handle reports speaking state and stops audio", async () => {
         getStatus: async () => ({speaking: true}),
         stopAudio: async () => {
             stopped = true;
-        }
+        },
+        onSpeakingChanged: () => undefined
     };
     const handle = createHandle(TextToSpeechCapabilityMqttHandle, capability);
 
     assert.equal(await child(handle, "speaking").get(), true);
     await child(handle, "stop").set(Commands.BASIC.PERFORM);
     assert.equal(stopped, true);
+});
+
+test("TTS handle publishes the speaking property immediately on every transition, not just on the periodic poll", async () => {
+    let speaking = false;
+    let listener;
+    const refreshedBaseTopics = [];
+    const capability = {
+        getType: () => TextToSpeechCapability.TYPE,
+        speak: async () => undefined,
+        getStatus: async () => ({speaking: speaking}),
+        stopAudio: async () => undefined,
+        onSpeakingChanged: cb => {
+            listener = cb;
+        }
+    };
+    const controller = {
+        isInitialized: false,
+        refresh: async handle => {
+            refreshedBaseTopics.push(handle.getBaseTopic());
+        },
+        // No Home Assistant component is attached in this test, so refresh()
+        // only needs to exercise the raw MQTT publish path above.
+        withHass: () => undefined
+    };
+    const parent = {
+        getBaseTopic: () => "valetudo/TestRobot"
+    };
+
+    const handle = new TextToSpeechCapabilityMqttHandle({
+        parent: parent,
+        controller: controller,
+        robot: {},
+        capability: capability
+    });
+
+    assert.equal(typeof listener, "function", "the handle must register a speakingChanged listener");
+
+    speaking = true;
+    listener(true);
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.deepEqual(refreshedBaseTopics, ["valetudo/TestRobot/TextToSpeechCapability/speaking"]);
+
+    speaking = false;
+    listener(false);
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.deepEqual(refreshedBaseTopics, [
+        "valetudo/TestRobot/TextToSpeechCapability/speaking",
+        "valetudo/TestRobot/TextToSpeechCapability/speaking"
+    ]);
+    assert.equal(handle.children.find(item => item.topicName === "speaking"), handle.speakingProperty);
 });
 
 test("video handle starts and stops the stream and reports its state", async () => {

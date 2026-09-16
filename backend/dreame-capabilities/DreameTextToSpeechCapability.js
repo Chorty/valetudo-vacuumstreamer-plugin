@@ -4,7 +4,8 @@ const Logger = require("../../../backend/lib/Logger");
 const path = require("path");
 const TextToSpeechCapability = require("../core-capabilities/TextToSpeechCapability");
 const TextToSpeechCapabilityBusyError = require("../core-capabilities/TextToSpeechCapabilityBusyError");
-const {exec, execSync} = require("child_process");
+// Called through the module object so tests can replace execFile/execFileSync
+const childProcess = require("child_process");
 
 /**
  * Dreame-specific TTS capability.
@@ -22,6 +23,7 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
      * @param {object} [options.ttsConfig]
      * @param {string} [options.ttsConfig.tempDir] - Directory for temp audio files
      * @param {string} [options.ttsConfig.playerCommand] - Audio player command
+     * @param {string} [options.ttsConfig.ffmpegCommand] - ffmpeg binary used to convert downloaded MP3 audio to WAV
      * @param {string} [options.ttsConfig.defaultLanguage] - Default TTS language
      * @param {number} [options.ttsConfig.maxTextLength] - Maximum text length for TTS
      * @param {number} [options.ttsConfig.downloadTimeoutMs] - TTS download timeout in milliseconds
@@ -32,6 +34,7 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
         const defaults = {
             tempDir: "/tmp",
             playerCommand: "aplay",
+            ffmpegCommand: "ffmpeg",
             defaultLanguage: "en",
             maxTextLength: 200,
             downloadTimeoutMs: 10000,
@@ -44,7 +47,6 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
             throw new Error(`downloadTimeoutMs must be an integer between ${MIN_DOWNLOAD_TIMEOUT_MS} and ${MAX_DOWNLOAD_TIMEOUT_MS}`);
         }
 
-        this._speaking = false;
         this._currentText = null;
         this._playerProcess = null;
         this._conversionProcess = null;
@@ -75,7 +77,7 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
             Logger.info(`TTS: Speaking "${text}" in language "${lang}"`);
 
             try {
-                this._speaking = true;
+                this._setSpeaking(true);
                 this._currentText = text;
 
                 await this._downloadTTSAudio(text, lang, audioFile, signal);
@@ -87,7 +89,7 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
                 Logger.error("TTS: Failed to speak", e);
                 throw e;
             } finally {
-                this._speaking = false;
+                this._setSpeaking(false);
                 this._currentText = null;
                 fs.rmSync(workDir, {recursive: true, force: true});
             }
@@ -107,10 +109,10 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
             Logger.info(`TTS: Playing audio file ${filePath}`);
 
             try {
-                this._speaking = true;
+                this._setSpeaking(true);
                 await this._playAudio(filePath, signal);
             } finally {
-                this._speaking = false;
+                this._setSpeaking(false);
             }
         });
     }
@@ -136,7 +138,7 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
 
         this._stopPlaybackProcesses();
 
-        this._speaking = false;
+        this._setSpeaking(false);
         this._currentText = null;
 
         if (activeJob !== null) {
@@ -148,11 +150,12 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
      * @private
      */
     _stopPlaybackProcesses() {
-        try {
-            execSync(`killall ${this.ttsConfig.playerCommand} 2>/dev/null`);
-            execSync("killall ffmpeg 2>/dev/null");
-        } catch (e) {
-            // Process might not exist
+        for (const name of [this.ttsConfig.playerCommand, this.ttsConfig.ffmpegCommand]) {
+            try {
+                childProcess.execFileSync("killall", [name], {stdio: "ignore"});
+            } catch (e) {
+                // Process might not exist
+            }
         }
     }
 
@@ -296,33 +299,30 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
      */
     _convertToWav(mp3Path, wavPath, signal) {
         return new Promise((resolve, reject) => {
-            // Try ffmpeg first, fall back to mpg123 or direct playback
-            this._conversionProcess = exec("which ffmpeg", (err) => {
-                if (signal.aborted) {
-                    reject(createCancellationError());
-                    return;
-                }
-                if (!err) {
-                    this._conversionProcess = exec(`ffmpeg -y -i "${mp3Path}" -ar 16000 -ac 1 -f wav "${wavPath}"`, (error) => {
-                        this._conversionProcess = null;
-                        if (signal.aborted) {
-                            reject(createCancellationError());
-                            return;
-                        }
+            // Paths are passed as arguments, never through a shell
+            this._conversionProcess = childProcess.execFile(
+                this.ttsConfig.ffmpegCommand,
+                ["-y", "-i", path.resolve(mp3Path), "-ar", "16000", "-ac", "1", "-f", "wav", path.resolve(wavPath)],
+                (error) => {
+                    this._conversionProcess = null;
+                    if (signal.aborted) {
+                        reject(createCancellationError());
+                        return;
+                    }
+                    try {
                         if (error) {
-                            Logger.warn("TTS: ffmpeg conversion failed, will try playing MP3 directly");
-                            // Copy mp3 as fallback
+                            if (error.code !== "ENOENT") {
+                                Logger.warn("TTS: ffmpeg conversion failed, will try playing MP3 directly");
+                            }
+                            // No ffmpeg or a failed conversion: play the MP3 itself
                             fs.copyFileSync(mp3Path, wavPath);
                         }
                         resolve();
-                    });
-                } else {
-                    this._conversionProcess = null;
-                    // No ffmpeg, just use the mp3 directly
-                    fs.copyFileSync(mp3Path, wavPath);
-                    resolve();
+                    } catch (e) {
+                        reject(e);
+                    }
                 }
-            });
+            );
         });
     }
 
@@ -334,31 +334,39 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
      * @returns {Promise<void>}
      */
     _playAudio(audioPath, signal) {
+        // An absolute path can never be mistaken for a player option, and the
+        // path is passed as one argument, never through a shell.
+        const absolutePath = path.resolve(audioPath);
+        const players = path.extname(absolutePath).toLowerCase() === ".mp3" ?
+            [
+                {command: "mpg123", args: ["-q", absolutePath]},
+                {command: "ffplay", args: ["-nodisp", "-autoexit", absolutePath]}
+            ] :
+            [{command: this.ttsConfig.playerCommand, args: [absolutePath]}];
+
         return new Promise((resolve, reject) => {
-            // Try different playback methods
-            const ext = path.extname(audioPath).toLowerCase();
+            const play = (index) => {
+                const player = players[index];
 
-            let command;
-            if (ext === ".mp3") {
-                // Try mpg123 for MP3 files, fall back to ffplay
-                command = `mpg123 -q "${audioPath}" 2>/dev/null || ffplay -nodisp -autoexit "${audioPath}" 2>/dev/null`;
-            } else {
-                // WAV files can use aplay
-                command = `${this.ttsConfig.playerCommand} "${audioPath}" 2>/dev/null`;
-            }
+                this._playerProcess = childProcess.execFile(player.command, player.args, (error) => {
+                    this._playerProcess = null;
+                    if (signal.aborted) {
+                        reject(createCancellationError());
+                        return;
+                    }
+                    if (error && index + 1 < players.length) {
+                        play(index + 1);
+                        return;
+                    }
+                    if (error) {
+                        Logger.warn(`TTS: Audio playback with ${player.command} returned code ${error.code}`);
+                    }
+                    // Resolve even on error — the audio may have played partially
+                    resolve();
+                });
+            };
 
-            this._playerProcess = exec(command, (error) => {
-                this._playerProcess = null;
-                if (signal.aborted) {
-                    reject(createCancellationError());
-                    return;
-                }
-                if (error && error.code !== 0) {
-                    Logger.warn(`TTS: Audio playback command returned code ${error.code}`);
-                }
-                // Resolve even on error — the audio may have played partially
-                resolve();
-            });
+            play(0);
         });
     }
 
