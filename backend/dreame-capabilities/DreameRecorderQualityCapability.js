@@ -1,5 +1,5 @@
 const RecorderQualityCapability = require("../core-capabilities/RecorderQualityCapability");
-const {execFile} = require("child_process");
+const {runNativeScriptJson, sanitizedScriptEnv} = require("./runNativeScript");
 
 /**
  * Dreame-specific recorder quality capability.
@@ -53,30 +53,13 @@ class DreameRecorderQualityCapability extends RecorderQualityCapability {
      * @returns {Promise<import("../core-capabilities/RecorderQualityCapability").RecorderQualityStatus>}
      */
     _runRecorderQualityCtl(args) {
-        return new Promise((resolve, reject) => {
-            execFile(this.scriptConfig.recorderQualityCtlPath, args, {
-                // A "set" call may restart video_monitor, which itself waits on
-                // vs_stop's grace period before the launch even begins.
-                timeout: 15000,
-            }, (error, stdout, stderr) => {
-                if (error) {
-                    const detail = String(stderr).trim() || error.message;
-                    const wrapped = new Error(`recorder_quality_ctl ${args[0]} failed: ${detail}`);
-
-                    if (error.code) {
-                        Object.assign(wrapped, {code: error.code});
-                    }
-
-                    reject(wrapped);
-                    return;
-                }
-
-                try {
-                    resolve(JSON.parse(stdout));
-                } catch (e) {
-                    reject(new Error(`recorder_quality_ctl ${args[0]} returned invalid JSON: ${stdout}`));
-                }
-            });
+        return runNativeScriptJson("recorder_quality_ctl", this.scriptConfig.recorderQualityCtlPath, args, {
+            // A "set" call may wait for the camera lock (up to
+            // CAMERA_WAKE_TIMEOUT_SECONDS, default 15s), settle for a second,
+            // then wait again for video_monitor's port to listen (up to the
+            // same timeout) -- comfortably exceed that worst case here.
+            timeout: 35000,
+            env: sanitizedScriptEnv(),
         });
     }
 }

@@ -94,6 +94,33 @@ test("getProperties advertises the supported profiles", () => {
     assert.deepEqual(capability.getProperties(), {supportedProfiles: ["low", "high"]});
 });
 
+test("recorder_quality_ctl.sh receives the action without inherited preload or credential settings", async t => {
+    const names = ["LD_PRELOAD", "CREDENTIALS_DIRECTORY", "GO2RTC_USERNAME", "GO2RTC_PASSWORD"];
+    const saved = Object.fromEntries(names.map(name => [name, process.env[name]]));
+
+    for (const name of names) {
+        process.env[name] = "inherited";
+    }
+
+    try {
+        const capability = capabilityWithScript(t, [
+            "[ \"$1\" = get ] || exit 2",
+            ...names.map(name => `[ -z "\${${name}+set}" ] || exit 3`),
+            "echo '{\"profile\":\"high\",\"width\":640,\"height\":480,\"framerate\":25,\"bitrate\":2000000}'",
+        ].join("\n"));
+
+        await capability.getQuality();
+    } finally {
+        for (const name of names) {
+            if (saved[name] === undefined) {
+                delete process.env[name];
+            } else {
+                process.env[name] = saved[name];
+            }
+        }
+    }
+});
+
 test("getType returns the capability type", () => {
     const capability = new DreameRecorderQualityCapability({robot: {}});
 

@@ -47,6 +47,13 @@ test("exports MQTT mappings for the plugin capabilities", () => {
     assert.equal(mappings[RecorderQualityCapability.TYPE], RecorderQualityCapabilityMqttHandle);
 });
 
+test("plugin MQTT handles are never OPTIONAL, since their capability types can't be added to the parent's generated optionalExposedCapabilities enum from here", () => {
+    assert.equal(TextToSpeechCapabilityMqttHandle.OPTIONAL, false);
+    assert.equal(VideoStreamCapabilityMqttHandle.OPTIONAL, false);
+    assert.equal(MicrophoneGainCapabilityMqttHandle.OPTIONAL, false);
+    assert.equal(RecorderQualityCapabilityMqttHandle.OPTIONAL, false);
+});
+
 test("TTS handle exposes a Home Assistant notify entity and invokes speak", async () => {
     const spoken = [];
     const capability = {

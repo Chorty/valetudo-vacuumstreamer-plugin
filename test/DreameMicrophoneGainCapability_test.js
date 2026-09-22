@@ -97,6 +97,42 @@ test("getProperties advertises the 0-100 range", () => {
     assert.deepEqual(capability.getProperties(), {min: 0, max: 100});
 });
 
+test("setGain validates against the advertised range, not a hardcoded one", async t => {
+    const capability = capabilityWithScript(t, "echo should-not-run; exit 1");
+
+    capability.getProperties = () => ({min: 10, max: 20});
+
+    await assert.rejects(capability.setGain(9), /between 10 and 20/);
+    await assert.rejects(capability.setGain(21), /between 10 and 20/);
+});
+
+test("mic_gain_ctl.sh receives the action without inherited preload or credential settings", async t => {
+    const names = ["LD_PRELOAD", "CREDENTIALS_DIRECTORY", "GO2RTC_USERNAME", "GO2RTC_PASSWORD"];
+    const saved = Object.fromEntries(names.map(name => [name, process.env[name]]));
+
+    for (const name of names) {
+        process.env[name] = "inherited";
+    }
+
+    try {
+        const capability = capabilityWithScript(t, [
+            "[ \"$1\" = get ] || exit 2",
+            ...names.map(name => `[ -z "\${${name}+set}" ] || exit 3`),
+            "echo '{\"mic_volume\":0,\"raw\":0}'",
+        ].join("\n"));
+
+        await capability.getGain();
+    } finally {
+        for (const name of names) {
+            if (saved[name] === undefined) {
+                delete process.env[name];
+            } else {
+                process.env[name] = saved[name];
+            }
+        }
+    }
+});
+
 test("getType returns the capability type", () => {
     const capability = new DreameMicrophoneGainCapability({robot: {}});
 

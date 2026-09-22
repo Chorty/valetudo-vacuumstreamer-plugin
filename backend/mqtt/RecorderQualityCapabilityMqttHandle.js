@@ -62,6 +62,13 @@ class RecorderQualityCapabilityMqttHandle extends CapabilityMqttHandle {
     }
 }
 
-RecorderQualityCapabilityMqttHandle.OPTIONAL = true;
+// Unlike core's optional capabilities (e.g. CarpetSensorModeControlCapability),
+// this type can't be added to the parent's generated
+// optionalExposedCapabilities enum from the plugin, so OPTIONAL: true would
+// make this entity permanently unreachable -- every config PUT enabling it
+// would fail schema validation. It follows the plugin's own established
+// pattern (TextToSpeechCapabilityMqttHandle, VideoStreamCapabilityMqttHandle)
+// of always registering instead.
+RecorderQualityCapabilityMqttHandle.OPTIONAL = false;
 
 module.exports = RecorderQualityCapabilityMqttHandle;

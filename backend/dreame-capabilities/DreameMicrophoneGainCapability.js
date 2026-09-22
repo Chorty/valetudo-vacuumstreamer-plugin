@@ -1,5 +1,5 @@
 const MicrophoneGainCapability = require("../core-capabilities/MicrophoneGainCapability");
-const {execFile} = require("child_process");
+const {runNativeScriptJson, sanitizedScriptEnv} = require("./runNativeScript");
 
 /**
  * Dreame-specific microphone gain capability.
@@ -40,8 +40,10 @@ class DreameMicrophoneGainCapability extends MicrophoneGainCapability {
      * @returns {Promise<void>}
      */
     async setGain(value) {
-        if (!Number.isInteger(value) || value < 0 || value > 100) {
-            throw new Error("Microphone gain must be an integer between 0 and 100");
+        const {min, max} = this.getProperties();
+
+        if (!Number.isInteger(value) || value < min || value > max) {
+            throw new Error(`Microphone gain must be an integer between ${min} and ${max}`);
         }
 
         await this._runMicGainCtl(["set", String(value)]);
@@ -53,28 +55,9 @@ class DreameMicrophoneGainCapability extends MicrophoneGainCapability {
      * @returns {Promise<{mic_volume: number, raw: number}>}
      */
     _runMicGainCtl(args) {
-        return new Promise((resolve, reject) => {
-            execFile(this.scriptConfig.micGainCtlPath, args, {
-                timeout: 10000,
-            }, (error, stdout, stderr) => {
-                if (error) {
-                    const detail = String(stderr).trim() || error.message;
-                    const wrapped = new Error(`mic_gain_ctl ${args[0]} failed: ${detail}`);
-
-                    if (error.code) {
-                        Object.assign(wrapped, {code: error.code});
-                    }
-
-                    reject(wrapped);
-                    return;
-                }
-
-                try {
-                    resolve(JSON.parse(stdout));
-                } catch (e) {
-                    reject(new Error(`mic_gain_ctl ${args[0]} returned invalid JSON: ${stdout}`));
-                }
-            });
+        return runNativeScriptJson("mic_gain_ctl", this.scriptConfig.micGainCtlPath, args, {
+            timeout: 10000,
+            env: sanitizedScriptEnv(),
         });
     }
 }
