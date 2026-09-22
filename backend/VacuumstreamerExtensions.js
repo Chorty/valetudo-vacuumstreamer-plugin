@@ -35,6 +35,20 @@ module.exports = function registerVacuumstreamerCapabilities(robot, options = {}
                 go2rtcApiPort: 1984,
             },
         }));
+
+        robot.registerCapability(new capabilities.DreameMicrophoneGainCapability({
+            robot: robot,
+            scriptConfig: {
+                micGainCtlPath: "/data/vacuumstreamer/mic_gain_ctl.sh",
+            },
+        }));
+
+        robot.registerCapability(new capabilities.DreameRecorderQualityCapability({
+            robot: robot,
+            scriptConfig: {
+                recorderQualityCtlPath: "/data/vacuumstreamer/recorder_quality_ctl.sh",
+            },
+        }));
     }
 
     if (config.switches.TTS) {
