@@ -5,4 +5,6 @@ module.exports = {
     [capabilities.VideoStreamCapability.TYPE]: capabilityRouters.VideoStreamCapabilityRouter,
     [capabilities.TextToSpeechCapability.TYPE]: capabilityRouters.TextToSpeechCapabilityRouter,
     [capabilities.MapManagementCapability.TYPE]: capabilityRouters.MapManagementCapabilityRouter,
+    [capabilities.MicrophoneGainCapability.TYPE]: capabilityRouters.MicrophoneGainCapabilityRouter,
+    [capabilities.RecorderQualityCapability.TYPE]: capabilityRouters.RecorderQualityCapabilityRouter,
 };

@@ -4,6 +4,8 @@ const test = require("node:test");
 
 const Logger = require("../../backend/lib/Logger");
 const MapManagementCapability = require("../backend/core-capabilities/MapManagementCapability");
+const MicrophoneGainCapability = require("../backend/core-capabilities/MicrophoneGainCapability");
+const RecorderQualityCapability = require("../backend/core-capabilities/RecorderQualityCapability");
 const registerVacuumstreamerCapabilities = require("../backend/VacuumstreamerExtensions");
 const TextToSpeechCapability = require("../backend/core-capabilities/TextToSpeechCapability");
 const VideoStreamCapability = require("../backend/core-capabilities/VideoStreamCapability");
@@ -43,6 +45,8 @@ function types(capabilities) {
 test("registers every capability when all switches are on", t => {
     assert.deepEqual(types(register(t)), [
         VideoStreamCapability.TYPE,
+        MicrophoneGainCapability.TYPE,
+        RecorderQualityCapability.TYPE,
         TextToSpeechCapability.TYPE,
         MapManagementCapability.TYPE,
     ]);
@@ -53,7 +57,7 @@ test("points the TTS capability at the robot's own ffmpeg, not the PATH lookup",
     assert.equal(tts.ttsConfig.ffmpegCommand, "/data/vacuumstreamer/ffmpeg");
 });
 
-test("does not register the camera when it is switched off", t => {
+test("does not register the camera or its mic gain / recorder quality capabilities when it is switched off", t => {
     assert.deepEqual(types(register(t, {switches: {CAMERA: false}})), [
         TextToSpeechCapability.TYPE,
         MapManagementCapability.TYPE,
@@ -63,6 +67,8 @@ test("does not register the camera when it is switched off", t => {
 test("does not register TTS or floor management when they are switched off", t => {
     assert.deepEqual(types(register(t, {switches: {TTS: false, MAP_MANAGEMENT: false}})), [
         VideoStreamCapability.TYPE,
+        MicrophoneGainCapability.TYPE,
+        RecorderQualityCapability.TYPE,
     ]);
 });
 
