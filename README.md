@@ -7,7 +7,7 @@ At Valetudo startup the plugin reads `/data/vacuumstreamer/vacuumstreamer.conf`,
 
 | Switch | Capability |
 |---|---|
-| `CAMERA` | `VideoStreamCapability` |
+| `CAMERA` | `VideoStreamCapability`, `MicrophoneGainCapability`, and `RecorderQualityCapability` |
 | `TTS` | `TextToSpeechCapability` |
 | `MAP_MANAGEMENT` | `MapManagementCapability` |
 
@@ -31,6 +31,8 @@ When both MQTT and Home Assistant autodiscovery are enabled in Valetudo, this pl
 - A diagnostic binary sensor reporting whether speech or audio is playing
 - A button that stops current speech or audio playback
 - A switch that resumes or pauses the camera; with on-demand capture it stays on while the camera waits for a viewer
+- A microphone-gain number entity backed by the native `mic_gain_ctl.sh`
+- A recorder-quality select entity backed by `recorder_quality_ctl.sh`, with low and high 864×480/15 fps profiles
 - Disabled-by-default diagnostic sensors containing the RTSP and WebRTC stream URLs
 
 The live camera stream itself remains on go2rtc/RTSP rather than being transported over MQTT.
@@ -39,4 +41,4 @@ Speech and local audio playback are single-flight operations. If audio is alread
 `409` and overlapping MQTT commands are rejected. TTS downloads use a 10-second timeout and can be cancelled with the
 existing stop action. Video start and stop commands are serialized so that rapid commands are applied in order.
 
-Video quality selection is intentionally not exposed. The retired selector never changed capture resolution, recorder settings, bitrate, or go2rtc output; stream start, stop, status, and URL behavior remain supported.
+The retired `VideoQualityCapability` only changed an in-memory label. The current `RecorderQualityCapability` is a separate control: its Home Assistant select entity changes the native recorder profile and encoder bitrate. The low profile uses 600 kbps and high uses 2 Mbps at the camera's native 864×480 and 15 fps.

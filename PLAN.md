@@ -1,5 +1,8 @@
 # Resolve Security Review Findings
 
+> Historical planning record. For current capabilities and deployment state,
+> use this plugin's README and the parent Valetudo CLAUDE.md.
+
 ## Priority and Fix Types
 
 | Issue | Classification | Severity | Importance | Disposition |
