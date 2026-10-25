@@ -1,4 +1,5 @@
 const http = require("http");
+const {pipeline} = require("stream");
 
 const CapabilityRouter = require("../../../backend/lib/webserver/capabilityRouters/CapabilityRouter");
 
@@ -132,7 +133,11 @@ class VideoStreamCapabilityRouter extends CapabilityRouter {
                 "Cache-Control": "no-store, no-transform",
                 "X-Content-Type-Options": "nosniff",
             });
-            incoming.pipe(res);
+            // Unlike pipe(), pipeline() also ends the viewer's response when go2rtc's
+            // connection drops mid-stream, so the player stops and its slot is freed.
+            pipeline(incoming, res, () => {
+                /* either side closing early is expected */
+            });
         });
 
         upstream.on("timeout", () => {

@@ -160,6 +160,37 @@ test("go2rtc errors become 404 or 502 without leaking its body", async (t) => {
     assert.equal(expired.body.includes("page not found"), false);
 });
 
+test("go2rtc dropping mid-stream ends the viewer's response and frees its slot", async (t) => {
+    let upstreamSocket = null;
+    const go2rtc = http.createServer((req, res) => {
+        res.writeHead(200, {"Content-Type": "video/mp4"});
+        res.write(Buffer.from("ftypiso5"));
+        upstreamSocket = req.socket;
+    });
+    await new Promise(resolve => go2rtc.listen(0, "127.0.0.1", resolve));
+    const router = new VideoStreamCapabilityRouter({
+        capability: {streamConfig: {go2rtcApiPort: go2rtc.address().port}, getProperties: () => ({})},
+        validator: (req, res, next) => next(),
+    });
+    const app = express();
+    app.use("/v", router.router);
+    const server = http.createServer(app);
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+    t.after(() => {
+        server.closeAllConnections();
+        go2rtc.closeAllConnections();
+        server.close();
+        go2rtc.close();
+    });
+
+    const live = await openLive(`http://127.0.0.1:${server.address().port}/v/live.mp4`);
+    const viewerClosed = new Promise(resolve => live.req.once("close", resolve));
+    upstreamSocket.destroy();
+
+    await viewerClosed;
+    await waitFor(() => router.activeLiveStreams === 0);
+});
+
 test("an unreachable go2rtc answers 502", async () => {
     const router = new VideoStreamCapabilityRouter({
         capability: {streamConfig: {go2rtcApiPort: 1}, getProperties: () => ({})},
