@@ -16,6 +16,8 @@ function register(t, options = {}) {
 
     const registered = [];
     const robot = {
+        capabilities: {},
+        operationModes: {},
         registerCapability: capability => registered.push(capability),
     };
 
