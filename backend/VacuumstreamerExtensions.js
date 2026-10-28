@@ -1,3 +1,4 @@
+const applyRobotOverrides = require("./RobotOverrides");
 const capabilities = require("./dreame-capabilities");
 const Logger = require("../../backend/lib/Logger");
 const {loadVacuumstreamerConfig} = require("./VacuumstreamerConfig");
@@ -5,15 +6,19 @@ const {loadVacuumstreamerConfig} = require("./VacuumstreamerConfig");
 const CAPABILITY_SWITCHES = Object.freeze(["CAMERA", "TTS", "MAP_MANAGEMENT"]);
 
 /**
- * Registers the VacuumStreamer capabilities that are switched on in
- * vacuumstreamer.conf. A capability that is switched off is not registered, so
- * its REST routes, MQTT topics and Home Assistant entities are absent.
+ * Applies this robot's firmware overrides (RobotOverrides.js), then registers
+ * the VacuumStreamer capabilities that are switched on in vacuumstreamer.conf.
+ * A capability that is switched off is not registered, so its REST routes,
+ * MQTT topics and Home Assistant entities are absent.
  *
  * @param {any} robot
  * @param {object} [options]
  * @param {() => import("./VacuumstreamerConfig").VacuumstreamerConfig} [options.loadConfig]
  */
 module.exports = function registerVacuumstreamerCapabilities(robot, options = {}) {
+    // Firmware overrides first, so a problem with vacuumstreamer.conf cannot skip them.
+    applyRobotOverrides(robot);
+
     const config = (options.loadConfig ?? loadVacuumstreamerConfig)();
 
     for (const warning of config.warnings) {
