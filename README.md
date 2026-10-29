@@ -29,6 +29,9 @@ The plugin also carries fork changes that are not VacuumStreamer features. No sw
 
 - `backend/RobotOverrides.js`, for this robot's firmware 1574: re-adds the `VACUUM_THEN_MOP` operation mode (preset 3), uses the V1 mop extension control instead of upstream's V2, and reports the edge-extension-frequency quirk as `null` when the firmware omits `ExtrFreq`, where upstream's getter would throw and the quirk would drop out of the list.
 - `GuardedVoicePackManagementCapabilityRouter` replaces upstream's voice-pack router. A download URL must be http(s) without credentials and must not target the robot's own loopback or a link-local address; otherwise the request gets 400 and never reaches the firmware. Hostnames are not resolved, and the firmware may follow redirects.
+- `backend/VacuumstreamerWebServer.js`, called at two points in `WebServer.js`:
+  - `beforeRoutes` installs privacy-safe slow-request logging. It is off unless `VALETUDO_SLOW_REQUEST_MS` is set to an integer from 100 through 60000. It never logs SSE, log-content routes, or responses that set `res.locals.longLivedStream`, such as the camera's `live.mp4`.
+  - `frontendAssets` serves the content-hashed files under `/static/` with one-year immutable caching, sends the `.br`/`.gz` copies the frontend build makes when the client accepts them, and limits `/static/` to 120 requests per 10 s. Everything else, `index.html` included, is left to upstream's handler.
 
 ## Home Assistant and MQTT
 
