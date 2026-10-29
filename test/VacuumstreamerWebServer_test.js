@@ -5,7 +5,7 @@ const path = require("node:path");
 const zlib = require("node:zlib");
 const { describe, it } = require("node:test");
 // The plugin has no package.json; its tests run in the backend workspace, which provides express.
-// eslint-disable-next-line node/no-unpublished-require
+// eslint-disable-next-line node/no-extraneous-require, node/no-unpublished-require
 const express = require("express");
 
 const DEFAULT_CONFIG = require("../../backend/lib/res/default_config.json");

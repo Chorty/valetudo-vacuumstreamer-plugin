@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const http = require("node:http");
 const { describe, it } = require("node:test");
 // The plugin has no package.json; its tests run in the backend workspace, which provides express.
-// eslint-disable-next-line node/no-unpublished-require
+// eslint-disable-next-line node/no-extraneous-require, node/no-unpublished-require
 const express = require("express");
 
 const CapabilitiesRouter = require("../../backend/lib/webserver/CapabilitiesRouter");
