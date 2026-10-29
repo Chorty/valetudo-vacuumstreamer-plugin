@@ -1,4 +1,5 @@
 module.exports = {
+    GuardedVoicePackManagementCapabilityRouter: require("./GuardedVoicePackManagementCapabilityRouter"),
     MapManagementCapabilityRouter: require("./MapManagementCapabilityRouter"),
     MicrophoneGainCapabilityRouter: require("./MicrophoneGainCapabilityRouter"),
     RecorderQualityCapabilityRouter: require("./RecorderQualityCapabilityRouter"),

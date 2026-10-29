@@ -23,6 +23,13 @@ With `camera_ctl.sh`, the stream status reports:
 
 Installs without `camera_ctl.sh` start and stop the binaries directly, without switch or login checks, and report `active` only while both processes run.
 
+## Fork Changes Outside the Switches
+
+The plugin also carries fork changes that are not VacuumStreamer features. No switch turns them off.
+
+- `backend/RobotOverrides.js`, for this robot's firmware 1574: re-adds the `VACUUM_THEN_MOP` operation mode (preset 3), uses the V1 mop extension control instead of upstream's V2, and reports the edge-extension-frequency quirk as `null` when the firmware omits `ExtrFreq`, where upstream's getter would throw and the quirk would drop out of the list.
+- `GuardedVoicePackManagementCapabilityRouter` replaces upstream's voice-pack router. A download URL must be http(s) without credentials and must not target the robot's own loopback or a link-local address; otherwise the request gets 400 and never reaches the firmware. Hostnames are not resolved, and the firmware may follow redirects.
+
 ## Home Assistant and MQTT
 
 When both MQTT and Home Assistant autodiscovery are enabled in Valetudo, this plugin adds the following entities to the robot device:
