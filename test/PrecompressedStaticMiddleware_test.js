@@ -91,8 +91,8 @@ test("middleware uses a prebuilt index without request-time filesystem discovery
 function createResponse() {
     return {
         headers: {},
-        sendFile: function(filePath) {
-            this.body = fs.readFileSync(filePath);
+        sendFile: function(filePath, options) {
+            this.body = fs.readFileSync(path.resolve(options.root, filePath));
         },
         set: function(name, value) {
             this.headers[name] = value;

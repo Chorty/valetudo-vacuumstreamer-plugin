@@ -22,10 +22,12 @@ const FRONTEND_BUILD = path.join(__dirname, "../../frontend/build");
  * sidecars, one without any, and an index.html.
  *
  * @param {any} t
+ * @param {boolean} hiddenParent
  */
-function temporaryBuild(t) {
-    const build = fs.mkdtempSync(path.join(os.tmpdir(), "valetudo-build-"));
-    t.after(() => fs.rmSync(build, {recursive: true, force: true}));
+function temporaryBuild(t, hiddenParent = false) {
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "valetudo-build-"));
+    const build = hiddenParent ? path.join(temporary, ".cache", "frontend") : temporary;
+    t.after(() => fs.rmSync(temporary, {recursive: true, force: true}));
 
     const bundle = Buffer.from("console.log('main');".repeat(100));
     fs.mkdirSync(path.join(build, "static", "js"), {recursive: true});
@@ -174,6 +176,30 @@ describe("VacuumstreamerWebServer", () => {
             assert.equal(plain.headers.get("content-encoding"), null);
             assert.equal(plain.headers.get("cache-control"), "public, max-age=31536000, immutable");
             assert.equal(await plain.text(), "plain");
+        });
+
+        it("serves compressed assets below a dot-directory without exposing dotfiles", async (t) => {
+            const {build, bundle} = temporaryBuild(t, true);
+            fs.writeFileSync(path.join(build, "static", ".private.js"), "private");
+            fs.writeFileSync(path.join(build, "static", ".private.js.br"), zlib.brotliCompressSync(Buffer.from("private")));
+            const app = express();
+            VacuumstreamerWebServer.frontendAssets(app, build);
+            const base = await listening(t, app.listen(0, "127.0.0.1"));
+
+            for (const encoding of ["br", "gzip"]) {
+                const response = await fetch(`${base}/static/js/main.abc12345.js`, {headers: {"Accept-Encoding": encoding}});
+                assert.equal(response.status, 200);
+                assert.equal(response.headers.get("content-encoding"), encoding);
+                assert.deepEqual(Buffer.from(await response.arrayBuffer()), bundle);
+            }
+            const head = await fetch(`${base}/static/js/main.abc12345.js`, {method: "HEAD", headers: {"Accept-Encoding": "br"}});
+            assert.equal(head.status, 200);
+            assert.equal(head.headers.get("content-encoding"), "br");
+            assert.equal((await head.arrayBuffer()).byteLength, 0);
+
+            const hidden = await fetch(`${base}/static/.private.js`, {headers: {"Accept-Encoding": "br"}});
+            assert.equal(hidden.status, 404);
+            await hidden.arrayBuffer();
         });
 
         it("leaves everything outside /static/ to upstream's handler", async (t) => {
