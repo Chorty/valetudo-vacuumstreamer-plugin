@@ -43,7 +43,9 @@ module.exports = function(options) {
         res.set("Content-Encoding", encoding);
         res.vary("Accept-Encoding");
         res.set("Cache-Control", "public, max-age=31536000, immutable");
-        res.sendFile(encodedPath);
+        // Keep sendFile's dotfile checks inside the static root. An absolute
+        // path would also reject a checkout under a parent such as ~/.cache.
+        res.sendFile(path.relative(root, encodedPath), {root: root});
     };
 };
 
