@@ -47,6 +47,15 @@ When both MQTT and Home Assistant autodiscovery are enabled in Valetudo, this pl
 
 The live camera stream itself remains on go2rtc/RTSP rather than being transported over MQTT.
 
+### Optional robot quirks
+
+`QuirksCapability` may be enabled as an optional MQTT capability. Individual quirks that are unsafe for unattended
+automation are intentionally omitted from MQTT and Home Assistant discovery even when the capability is enabled.
+Broker authentication and least-privilege topic ACLs should still be used for every robot command topic.
+
+The Quirks MQTT handle is registered only when `QuirksCapability` is included in Valetudo's MQTT
+`optionalExposedCapabilities` setting. Its presence in the robot's REST capability list does not enable MQTT exposure.
+
 Speech and local audio playback are single-flight operations. If audio is already active, the HTTP API responds with
 `409` and overlapping MQTT commands are rejected. TTS downloads use a 10-second timeout and can be cancelled with the
 existing stop action. Video start and stop commands are serialized so that rapid commands are applied in order.
