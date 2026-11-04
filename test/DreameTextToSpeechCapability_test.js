@@ -13,14 +13,92 @@ const TextToSpeechCapabilityBusyError = require("../backend/core-capabilities/Te
 const TextToSpeechCapabilityRouter = require("../backend/capability-routers/TextToSpeechCapabilityRouter");
 
 function createCapability(t, config = {}) {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "valetudo-tts-test-"));
+    const tempDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "valetudo-tts-test-")));
     t.after(() => fs.rmSync(tempDir, {recursive: true, force: true}));
 
     return new DreameTextToSpeechCapability({
         robot: {},
-        ttsConfig: Object.assign({tempDir: tempDir}, config)
+        ttsConfig: Object.assign({tempDir: tempDir, audioRoots: [tempDir]}, config)
     });
 }
+
+function createOutsideDir(t) {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "valetudo-tts-outside-")));
+    t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+    return dir;
+}
+
+test("play_file defaults to the robot's approved audio directories", () => {
+    const capability = new DreameTextToSpeechCapability({robot: {}});
+
+    assert.deepEqual(capability.ttsConfig.audioRoots, ["/tmp", "/data/vacuumstreamer/audio"]);
+});
+
+test("play_file rejects files outside the approved directories", async t => {
+    const capability = createCapability(t);
+    const calls = mockExecFile(t);
+    const outside = path.join(createOutsideDir(t), "secret.wav");
+    fs.writeFileSync(outside, "audio");
+
+    await assert.rejects(capability.playAudioFile(outside), /must be inside one of/);
+    assert.equal(calls.length, 0);
+});
+
+test("play_file rejects a symlink that leads outside the approved directories", async t => {
+    const capability = createCapability(t);
+    const calls = mockExecFile(t);
+    const target = path.join(createOutsideDir(t), "secret.wav");
+    fs.writeFileSync(target, "audio");
+    const link = path.join(capability.ttsConfig.tempDir, "innocent.wav");
+    fs.symlinkSync(target, link);
+
+    await assert.rejects(capability.playAudioFile(link), /must be inside one of/);
+    assert.equal(calls.length, 0);
+});
+
+test("play_file rejects an audio-named symlink to a non-audio file", async t => {
+    const capability = createCapability(t);
+    const calls = mockExecFile(t);
+    const target = path.join(capability.ttsConfig.tempDir, "valetudo.log");
+    fs.writeFileSync(target, "log line");
+    const link = path.join(capability.ttsConfig.tempDir, "log.wav");
+    fs.symlinkSync(target, link);
+
+    await assert.rejects(capability.playAudioFile(link), /must be one of: \.wav, \.mp3/);
+    assert.equal(calls.length, 0);
+});
+
+test("play_file rejects directories, other extensions, oversized files and missing files", async t => {
+    const capability = createCapability(t);
+    const calls = mockExecFile(t);
+    const dir = path.join(capability.ttsConfig.tempDir, "folder.wav");
+    fs.mkdirSync(dir);
+    const text = path.join(capability.ttsConfig.tempDir, "config.json");
+    fs.writeFileSync(text, "{}");
+    const big = path.join(capability.ttsConfig.tempDir, "big.wav");
+    fs.writeFileSync(big, "");
+    fs.truncateSync(big, 50 * 1024 * 1024 + 1);
+
+    await assert.rejects(capability.playAudioFile(dir), /must be a regular file/);
+    await assert.rejects(capability.playAudioFile(text), /must be one of/);
+    await assert.rejects(capability.playAudioFile(big), /larger than/);
+    await assert.rejects(capability.playAudioFile(path.join(capability.ttsConfig.tempDir, "none.wav")), /not found/);
+    await assert.rejects(capability.playAudioFile(""), /non-empty string/);
+    assert.equal(calls.length, 0);
+});
+
+test("play_file plays an approved file by its real path", async t => {
+    const capability = createCapability(t);
+    const calls = mockExecFile(t);
+    const audio = path.join(capability.ttsConfig.tempDir, "chime.WAV");
+    fs.writeFileSync(audio, "audio");
+    const link = path.join(capability.ttsConfig.tempDir, "alias.wav");
+    fs.symlinkSync(audio, link);
+
+    await capability.playAudioFile(link);
+
+    assert.deepEqual(calls, [{command: "aplay", args: [audio]}]);
+});
 
 function immediate() {
     return new Promise(resolve => setImmediate(resolve));

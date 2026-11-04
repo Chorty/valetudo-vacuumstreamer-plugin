@@ -27,6 +27,7 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
      * @param {string} [options.ttsConfig.defaultLanguage] - Default TTS language
      * @param {number} [options.ttsConfig.maxTextLength] - Maximum text length for TTS
      * @param {number} [options.ttsConfig.downloadTimeoutMs] - TTS download timeout in milliseconds
+     * @param {Array<string>} [options.ttsConfig.audioRoots] - Directories play_file may read audio from
      */
     constructor(options) {
         super(options);
@@ -38,6 +39,7 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
             defaultLanguage: "en",
             maxTextLength: 200,
             downloadTimeoutMs: 10000,
+            audioRoots: DEFAULT_AUDIO_ROOTS,
         };
 
         this.ttsConfig = Object.assign({}, defaults, options.ttsConfig || {});
@@ -101,16 +103,14 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
      * @returns {Promise<void>}
      */
     async playAudioFile(filePath) {
-        if (!fs.existsSync(filePath)) {
-            throw new Error(`Audio file not found: ${filePath}`);
-        }
+        const audioPath = this._resolvePlayableAudioFile(filePath);
 
         return this._runExclusiveAudioJob(async signal => {
-            Logger.info(`TTS: Playing audio file ${filePath}`);
+            Logger.info(`TTS: Playing audio file ${audioPath}`);
 
             try {
                 this._setSpeaking(true);
-                await this._playAudio(filePath, signal);
+                await this._playAudio(audioPath, signal);
             } finally {
                 this._setSpeaking(false);
             }
@@ -327,6 +327,52 @@ class DreameTextToSpeechCapability extends TextToSpeechCapability {
     }
 
     /**
+     * Resolve a play_file path to a regular audio file inside an approved directory.
+     * Checks the real path, so a symlink cannot lead outside the directories or
+     * disguise a non-audio file with an audio extension.
+     *
+     * @private
+     * @param {string} filePath
+     * @returns {string} the real path to play
+     */
+    _resolvePlayableAudioFile(filePath) {
+        if (typeof filePath !== "string" || filePath.length === 0 || filePath.includes("\0")) {
+            throw new Error("Audio file path must be a non-empty string");
+        }
+
+        let realPath;
+        let stats;
+        try {
+            realPath = fs.realpathSync(filePath);
+            stats = fs.statSync(realPath);
+        } catch (e) {
+            throw new Error(`Audio file not found: ${filePath}`);
+        }
+
+        const insideApprovedRoot = (this.ttsConfig.audioRoots || []).some(root => {
+            try {
+                return realPath.startsWith(fs.realpathSync(root) + path.sep);
+            } catch (e) {
+                return false;
+            }
+        });
+        if (!insideApprovedRoot) {
+            throw new Error(`Audio file must be inside one of: ${(this.ttsConfig.audioRoots || []).join(", ")}`);
+        }
+        if (!stats.isFile()) {
+            throw new Error("Audio file must be a regular file");
+        }
+        if (!PLAYABLE_AUDIO_EXTENSIONS.has(path.extname(realPath).toLowerCase())) {
+            throw new Error(`Audio file must be one of: ${[...PLAYABLE_AUDIO_EXTENSIONS].join(", ")}`);
+        }
+        if (stats.size > MAX_PLAYABLE_AUDIO_BYTES) {
+            throw new Error(`Audio file is larger than ${MAX_PLAYABLE_AUDIO_BYTES} bytes`);
+        }
+
+        return realPath;
+    }
+
+    /**
      * Play an audio file
      * @private
      * @param {string} audioPath
@@ -414,5 +460,10 @@ function createCancellationError() {
 
 const MIN_DOWNLOAD_TIMEOUT_MS = 100;
 const MAX_DOWNLOAD_TIMEOUT_MS = 120000;
+// play_file is limited to real audio files in these directories, so an API
+// caller cannot point the player at logs, configuration or device files.
+const DEFAULT_AUDIO_ROOTS = ["/tmp", "/data/vacuumstreamer/audio"];
+const PLAYABLE_AUDIO_EXTENSIONS = new Set([".wav", ".mp3"]);
+const MAX_PLAYABLE_AUDIO_BYTES = 50 * 1024 * 1024;
 
 module.exports = DreameTextToSpeechCapability;

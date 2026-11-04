@@ -1,7 +1,6 @@
 const fs = require("fs");
 const Logger = require("../../../backend/lib/Logger");
 const MapManagementCapability = require("../core-capabilities/MapManagementCapability");
-const os = require("os");
 const path = require("path");
 const tar = require("tar-stream");
 const {createGunzip} = require("zlib");
@@ -10,7 +9,9 @@ const {Readable} = require("stream");
 
 const MAX_ARCHIVE_BYTES = 100 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES = 10000;
-const MAX_EXTRACTED_BYTES = 512 * 1024 * 1024;
+// Saved L10S maps are under 2 MiB. Keep the cap far below the robot's free
+// memory: an import must never be able to starve the robot's control process.
+const MAX_EXTRACTED_BYTES = 64 * 1024 * 1024;
 const MAP_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 /**
@@ -378,9 +379,11 @@ class DreameMapManagementCapability extends MapManagementCapability {
      */
     async importMap(data, name) {
         const id = this._generateId(name);
-        const tempExtractDir = fs.mkdtempSync(path.join(os.tmpdir(), "valetudo_map_extract_"));
         const storagePath = fs.realpathSync(this.mapConfig.storagePath);
         const stagingParent = fs.mkdtempSync(path.join(storagePath, ".import-"));
+        // Extract on the storage filesystem, not os.tmpdir(): on the robot /tmp is
+        // RAM-backed tmpfs, so a large archive would consume memory.
+        const tempExtractDir = fs.mkdtempSync(path.join(stagingParent, "extract-"));
         const stagingDir = path.join(stagingParent, "map");
         const targetDir = this._resolveMapDirectory(id, false);
 
@@ -406,8 +409,8 @@ class DreameMapManagementCapability extends MapManagementCapability {
                 throw new Error("Archive does not contain valid map data (expected ri, map, or DivideMap directories)");
             }
 
-            // Copy into a staging directory on the storage filesystem, then promote atomically
-            fs.cpSync(extractedDir, stagingDir, {recursive: true, preserveTimestamps: true});
+            // Already on the storage filesystem: move into the staging directory, then promote atomically
+            fs.renameSync(extractedDir, stagingDir);
 
             // Update metadata
             const metadata = {

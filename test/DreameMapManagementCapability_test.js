@@ -261,6 +261,56 @@ test("imports a valid single-root map archive", async () => {
     }
 });
 
+test("extracts imports on the storage filesystem, never in the RAM-backed temp directory", async t => {
+    const fixture = createFixture();
+    const archive = await createArchive([
+        {header: {name: "saved-map/", type: "directory"}},
+        {header: {name: "saved-map/ri/", type: "directory"}},
+        {header: {name: "saved-map/ri/map.bin", type: "file"}, body: Buffer.from("valid map")},
+    ]);
+    const originalMkdtemp = fs.mkdtempSync;
+    const prefixes = [];
+    t.mock.method(fs, "mkdtempSync", (prefix, ...rest) => {
+        prefixes.push(prefix);
+        return originalMkdtemp(prefix, ...rest);
+    });
+
+    try {
+        await fixture.capability.importMap(archive, "Storage Only");
+        const storagePath = fs.realpathSync(fixture.storagePath);
+        assert.ok(prefixes.length >= 2);
+        for (const prefix of prefixes) {
+            assert.ok(prefix.startsWith(`${storagePath}${path.sep}`), `temporary directory outside storage: ${prefix}`);
+        }
+        assert.deepEqual(
+            fs.readdirSync(fixture.storagePath).filter(name => name.startsWith(".import-")),
+            []
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test("rejects imports that expand beyond 64 MiB and leaves no staging data", async () => {
+    const fixture = createFixture();
+    const archive = await createArchive([
+        {header: {name: "saved-map/", type: "directory"}},
+        {header: {name: "saved-map/ri/", type: "directory"}},
+        {header: {name: "saved-map/ri/huge.bin", type: "file"}, body: Buffer.alloc(64 * 1024 * 1024 + 1)},
+    ]);
+
+    try {
+        assert.ok(archive.length < 1024 * 1024, "zero-filled payload should compress far below the upload cap");
+        await assert.rejects(
+            fixture.capability.importMap(archive, "Too Big"),
+            /Archive expands beyond 67108864 bytes/
+        );
+        assert.deepEqual(fs.readdirSync(fixture.storagePath), []);
+    } finally {
+        fixture.cleanup();
+    }
+});
+
 test("exports and re-imports an existing valid map", async () => {
     const fixture = createFixture();
     const existingId = "existing_map_abc123";
