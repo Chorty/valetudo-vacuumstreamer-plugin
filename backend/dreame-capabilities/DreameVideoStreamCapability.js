@@ -294,14 +294,9 @@ class DreameVideoStreamCapability extends VideoStreamCapability {
      * @returns {Promise<import("../core-capabilities/VideoStreamCapability").StreamURLs>}
      */
     async getStreamURLs() {
-        const host = this._getHostAddress();
-        const port = this.streamConfig.go2rtcApiPort;
-
+        // go2rtc's API only listens on loopback, so RTSP is its one URL other devices can reach.
         return {
-            rtsp: `rtsp://${host}:8554/vacuum`,
-            webrtc: `http://${host}:${port}/api/webrtc?src=vacuum`,
-            hls: `http://${host}:${port}/api/stream.m3u8?src=vacuum`,
-            go2rtcApi: `http://${host}:${port}/api/`,
+            rtsp: `rtsp://${this._getHostAddress()}:8554/vacuum`,
         };
     }
 

@@ -43,7 +43,7 @@ When both MQTT and Home Assistant autodiscovery are enabled in Valetudo, this pl
 - A switch that resumes or pauses the camera; with on-demand capture it stays on while the camera waits for a viewer
 - A microphone-gain number entity backed by the native `mic_gain_ctl.sh`
 - A recorder-quality select entity backed by `recorder_quality_ctl.sh`, with low and high 864×480/15 fps profiles
-- Disabled-by-default diagnostic sensors containing the RTSP and WebRTC stream URLs
+- A disabled-by-default diagnostic sensor containing the RTSP stream URL
 
 The live camera stream itself remains on go2rtc/RTSP rather than being transported over MQTT.
 
