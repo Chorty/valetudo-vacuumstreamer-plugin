@@ -94,8 +94,7 @@ class VideoStreamCapabilityMqttHandle extends CapabilityMqttHandle {
 }
 
 const STREAM_URL_NAMES = Object.freeze({
-    rtsp: "RTSP Stream URL",
-    webrtc: "WebRTC Stream URL"
+    rtsp: "RTSP Stream URL"
 });
 
 VideoStreamCapabilityMqttHandle.OPTIONAL = false;

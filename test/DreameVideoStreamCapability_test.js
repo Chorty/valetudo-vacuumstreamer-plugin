@@ -59,9 +59,6 @@ test("stream URLs advertise the private-LAN address", async t => {
 
     assert.deepEqual(await createCapability().getStreamURLs(), {
         rtsp: "rtsp://192.168.1.31:8554/vacuum",
-        webrtc: "http://192.168.1.31:1984/api/webrtc?src=vacuum",
-        hls: "http://192.168.1.31:1984/api/stream.m3u8?src=vacuum",
-        go2rtcApi: "http://192.168.1.31:1984/api/",
     });
 });
 

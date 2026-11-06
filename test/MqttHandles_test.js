@@ -162,8 +162,7 @@ test("video handle starts and stops the stream and reports its state", async () 
             active = false;
         },
         getStreamURLs: async () => ({
-            rtsp: "rtsp://robot:8554/vacuum",
-            webrtc: "http://robot:1984/stream.html?src=vacuum"
+            rtsp: "rtsp://robot:8554/vacuum"
         })
     };
     const handle = createHandle(VideoStreamCapabilityMqttHandle, capability);
@@ -177,7 +176,7 @@ test("video handle starts and stops the stream and reports its state", async () 
     assert.deepEqual(calls, ["start", "stop"]);
     assert.equal(enabled.hassComponents[0].componentType, ComponentType.SWITCH);
     assert.equal(await child(handle, "rtsp_url").get(), "rtsp://robot:8554/vacuum");
-    assert.equal(await child(handle, "webrtc_url").get(), "http://robot:1984/stream.html?src=vacuum");
+    assert.equal(handle.children.some(item => item.topicName === "webrtc_url"), false);
 });
 
 test("video handle rejects unsupported switch commands", async () => {

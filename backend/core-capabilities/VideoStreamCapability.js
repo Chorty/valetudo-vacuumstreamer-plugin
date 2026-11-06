@@ -41,7 +41,7 @@ class VideoStreamCapability extends Capability {
     }
 
     /**
-     * Get available stream URLs (RTSP, WebRTC, etc.)
+     * Get the stream URLs other devices can reach
      *
      * @abstract
      * @returns {Promise<StreamURLs>}
@@ -68,9 +68,6 @@ class VideoStreamCapability extends Capability {
 /**
  * @typedef {object} StreamURLs
  * @property {string} [rtsp] - RTSP stream URL
- * @property {string} [webrtc] - WebRTC stream URL
- * @property {string} [hls] - HLS stream URL
- * @property {string} [go2rtcApi] - go2rtc API base URL
  */
 
 VideoStreamCapability.TYPE = "VideoStreamCapability";
